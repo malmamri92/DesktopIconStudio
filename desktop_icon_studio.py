@@ -170,6 +170,42 @@ class BITMAPINFO(ctypes.Structure):
     _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", RGBQUAD * 1)]
 
 
+# ==========================================================================
+#  توقيعات دوال Win32 المستخدمة في استخراج الأيقونات
+# ==========================================================================
+user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(ICONINFO)]
+user32.GetIconInfo.restype = wintypes.BOOL
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.GetDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
+user32.DestroyIcon.argtypes = [wintypes.HICON]
+user32.DestroyIcon.restype = wintypes.BOOL
+
+gdi32 = ctypes.windll.gdi32
+gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+gdi32.GetObjectW.restype = ctypes.c_int
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+gdi32.SelectObject.restype = wintypes.HANDLE
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+gdi32.DeleteDC.restype = wintypes.BOOL
+gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+gdi32.DeleteObject.restype = wintypes.BOOL
+gdi32.GetDIBits.argtypes = [
+    wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+    wintypes.LPVOID, ctypes.POINTER(BITMAPINFO), wintypes.UINT,
+]
+gdi32.GetDIBits.restype = ctypes.c_int
+
+shell32.SHGetFileInfoW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(SHFILEINFOW),
+    wintypes.UINT, wintypes.UINT,
+]
+shell32.SHGetFileInfoW.restype = wintypes.DWORD
+
+
 def MAKEINTRESOURCE(i):
     return ctypes.cast(ctypes.c_void_p(i), ctypes.c_wchar_p)
 
@@ -189,15 +225,15 @@ def _hicon_to_pil(hicon, size=32):
             hdc = user32.GetDC(None)
             memdc = gdi32.CreateCompatibleDC(hdc)
             old = gdi32.SelectObject(memdc, info.hbmColor)
-            bih = BITMAPINFOHEADER()
-            bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            bih.biWidth = w
-            bih.biHeight = -h
-            bih.biPlanes = 1
-            bih.biBitCount = 32
-            bih.biCompression = 0
+            bi = BITMAPINFO()
+            bi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bi.bmiHeader.biWidth = w
+            bi.bmiHeader.biHeight = -h
+            bi.bmiHeader.biPlanes = 1
+            bi.bmiHeader.biBitCount = 32
+            bi.bmiHeader.biCompression = 0
             buf = (ctypes.c_ubyte * (w * h * 4))()
-            gdi32.GetDIBits(memdc, info.hbmColor, 0, h, buf, ctypes.byref(bih), DIB_RGB_COLORS)
+            gdi32.GetDIBits(memdc, info.hbmColor, 0, h, buf, ctypes.byref(bi), DIB_RGB_COLORS)
             img = Image.frombuffer("RGBA", (w, h), bytes(buf), "raw", "BGRA", 0, 1)
             gdi32.SelectObject(memdc, old)
             gdi32.DeleteDC(memdc)
@@ -215,15 +251,15 @@ def _hicon_to_pil(hicon, size=32):
             hdc = user32.GetDC(None)
             memdc = gdi32.CreateCompatibleDC(hdc)
             old = gdi32.SelectObject(memdc, info.hbmMask)
-            bih = BITMAPINFOHEADER()
-            bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            bih.biWidth = w
-            bih.biHeight = -h * 2
-            bih.biPlanes = 1
-            bih.biBitCount = 32
-            bih.biCompression = 0
+            bi = BITMAPINFO()
+            bi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bi.bmiHeader.biWidth = w
+            bi.bmiHeader.biHeight = -h * 2
+            bi.bmiHeader.biPlanes = 1
+            bi.bmiHeader.biBitCount = 32
+            bi.bmiHeader.biCompression = 0
             buf = (ctypes.c_ubyte * (w * h * 2 * 4))()
-            gdi32.GetDIBits(memdc, info.hbmMask, 0, h * 2, buf, ctypes.byref(bih), DIB_RGB_COLORS)
+            gdi32.GetDIBits(memdc, info.hbmMask, 0, h * 2, buf, ctypes.byref(bi), DIB_RGB_COLORS)
             # نأخذ النصف السفلي كقناع ألفا
             data = bytearray(w * h * 4)
             for y in range(h):
@@ -274,8 +310,11 @@ def _display_name_to_path(name):
         for item in os.listdir(desktop):
             full = os.path.join(desktop, item)
             base, ext = os.path.splitext(item)
-            display = base if ext.lower() == ".lnk" else item
-            if display.lower().strip() == name_lower:
+            item_lower = item.lower()
+            base_lower = base.lower()
+            # قارن بعدة أشكال: الاسم الكامل، بدون امتداد، مع/بدون مسافات
+            if name_lower in (item_lower, base_lower,
+                              item_lower.strip(), base_lower.strip()):
                 return full
     # أيقونات النظام الشائعة
     system_icons = {
@@ -889,8 +928,10 @@ class App(ctk.CTk):
         self._size_busy = False
         self._res = self.ctl.work_area()
         self.area = self._res
+        self.map_bbox = self.area
 
         # --- tk variables ---
+        self.preview_size = tk.IntVar(value=self.settings.get("preview_size", 48))
         self.var_x = tk.IntVar(value=0)
         self.var_y = tk.IntVar(value=0)
         self.var_step = tk.IntVar(value=10)
@@ -1096,6 +1137,23 @@ class App(ctk.CTk):
                       command=lambda: self._nudge(-1, 0)).pack(side="left", padx=2)
         ctk.CTkButton(toolbar, text="➡", width=36,
                       command=lambda: self._nudge(1, 0)).pack(side="left", padx=2)
+
+        ctk.CTkLabel(toolbar, text="حجم المعاينة:").pack(side="left", padx=(20, 4))
+        self.lbl_preview = ctk.CTkLabel(toolbar, text=f"{self.preview_size.get()}px")
+        self.lbl_preview.pack(side="left", padx=2)
+        ctk.CTkSlider(
+            toolbar, from_=16, to=96, number_of_steps=80,
+            width=120, variable=self.preview_size,
+            command=lambda v: self._set_preview_size(int(float(v))),
+        ).pack(side="left", padx=4)
+
+    def _set_preview_size(self, size):
+        self.preview_size.set(size)
+        self.lbl_preview.configure(text=f"{size}px")
+        self.settings.set("preview_size", size)
+        if self.icons:
+            self._load_icon_images()
+            self._draw_map()
 
     def _build_look_section(self, parent):
         frame = ctk.CTkFrame(parent)
@@ -1381,6 +1439,7 @@ class App(ctk.CTk):
             messagebox.showerror("خطأ", str(exc))
             self._set_status("تعذّرت قراءة الأيقونات")
             return
+        self._compute_map_bbox()
         self._load_icon_images()
         self._draw_map()
         cur = self.ctl.get_icon_size()
@@ -1389,9 +1448,32 @@ class App(ctk.CTk):
         self._res_lbl.configure(text=self._res_key(self.ctl.work_area()))
         self._set_status(f"✅ {len(self.icons)} أيقونة")
 
+    def _compute_map_bbox(self):
+        if not self.icons:
+            self.map_bbox = self.area
+            return
+        xs = [ic["x"] for ic in self.icons]
+        ys = [ic["y"] for ic in self.icons]
+        pad = 60
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        # تأكد من تضمين مساحة العمل أيضًا
+        wx, wy, ww, wh = self.area
+        min_x = min(min_x, wx)
+        min_y = min(min_y, wy)
+        max_x = max(max_x, wx + ww)
+        max_y = max(max_y, wy + wh)
+        self.map_bbox = (min_x - pad, min_y - pad, max_x + pad, max_y + pad)
+        # تحديث ارتفاع الخريطة بنسبة الإطار المحيط بالأيقونات
+        bw = max(1, max_x - min_x + pad * 2)
+        bh = max(1, max_y - min_y + pad * 2)
+        self.map_h = max(500, int(self.map_w * bh / bw))
+        if hasattr(self, "canvas"):
+            self.canvas.config(width=self.map_w, height=self.map_h)
+
     def _load_icon_images(self):
         self.icon_photos = {}
-        size = max(24, min(64, self.ctl.get_icon_size() or 48))
+        size = max(16, min(96, self.preview_size.get()))
         for ic in self.icons:
             path = _display_name_to_path(ic["name"])
             img = _get_file_icon(path, size=size) if path else None
@@ -1402,13 +1484,15 @@ class App(ctk.CTk):
     def _draw_map(self):
         c = self.canvas
         c.delete("all")
-        wx, wy, ww, wh = self.area
-        sx = self.map_w / max(1, ww)
-        sy = self.map_h / max(1, wh)
+        bx, by, bx2, by2 = self.map_bbox
+        bw = max(1, bx2 - bx)
+        bh = max(1, by2 - by)
+        sx = self.map_w / bw
+        sy = self.map_h / bh
         self._scale = (sx, sy)
         for ic in self.icons:
-            x = (ic["x"] - wx) * sx
-            y = (ic["y"] - wy) * sy
+            x = (ic["x"] - bx) * sx
+            y = (ic["y"] - by) * sy
             photo = self.icon_photos.get(ic["i"])
             w = h = 10
             if photo:
@@ -1472,15 +1556,15 @@ class App(ctk.CTk):
 
     def _map_to_desktop(self, mx, my):
         sx, sy = self._scale
-        wx, wy = self.area[0], self.area[1]
-        return int(mx / sx + wx), int(my / sy + wy)
+        bx, by = self.map_bbox[0], self.map_bbox[1]
+        return int(mx / sx + bx), int(my / sy + by)
 
     def _icon_at(self, mx, my):
         sx, sy = self._scale
-        wx, wy = self.area[0], self.area[1]
+        bx, by = self.map_bbox[0], self.map_bbox[1]
         for ic in self.icons:
-            x = (ic["x"] - wx) * sx
-            y = (ic["y"] - wy) * sy
+            x = (ic["x"] - bx) * sx
+            y = (ic["y"] - by) * sy
             photo = self.icon_photos.get(ic["i"])
             w = photo.width() if photo else 10
             h = photo.height() if photo else 10
