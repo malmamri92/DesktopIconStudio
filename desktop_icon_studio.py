@@ -146,19 +146,20 @@ WNDPROC = ctypes.WINFUNCTYPE(
 
 
 class WNDCLASSEXW(ctypes.Structure):
+    # نستخدم HANDLE لكل المقابض لأن بعض إصدارات بايثون لا تعرّف الأنواع الفرعية
     _fields_ = [
         ("cbSize",        wintypes.UINT),
         ("style",         wintypes.UINT),
         ("lpfnWndProc",   WNDPROC),
         ("cbClsExtra",    ctypes.c_int),
         ("cbWndExtra",    ctypes.c_int),
-        ("hInstance",     wintypes.HINSTANCE),
-        ("hIcon",         wintypes.HICON),
-        ("hCursor",       wintypes.HCURSOR),
-        ("hbrBackground", wintypes.HBRUSH),
+        ("hInstance",     wintypes.HANDLE),
+        ("hIcon",         wintypes.HANDLE),
+        ("hCursor",       wintypes.HANDLE),
+        ("hbrBackground", wintypes.HANDLE),
         ("lpszMenuName",  wintypes.LPCWSTR),
         ("lpszClassName", wintypes.LPCWSTR),
-        ("hIconSm",       wintypes.HICON),
+        ("hIconSm",       wintypes.HANDLE),
     ]
 
 
@@ -169,7 +170,7 @@ class NOTIFYICONDATAW(ctypes.Structure):
         ("uID",                  wintypes.UINT),
         ("uFlags",               wintypes.UINT),
         ("uCallbackMessage",     wintypes.UINT),
-        ("hIcon",                wintypes.HICON),
+        ("hIcon",                wintypes.HANDLE),
         ("szTip",                wintypes.WCHAR * 128),
         ("dwState",              wintypes.DWORD),
         ("dwStateMask",          wintypes.DWORD),
@@ -178,7 +179,7 @@ class NOTIFYICONDATAW(ctypes.Structure):
         ("szInfoTitle",          wintypes.WCHAR * 64),
         ("dwInfoFlags",          wintypes.DWORD),
         ("guidItem",             ctypes.c_byte * 16),
-        ("hBalloonIcon",         wintypes.HICON),
+        ("hBalloonIcon",         wintypes.HANDLE),
     ]
 
 
