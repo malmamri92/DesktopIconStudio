@@ -1503,10 +1503,6 @@ class App(ctk.CTk):
                 color = "#f9a825" if ic["i"] in self.selection else "#4fc3f7"
                 c.create_rectangle(x, y, x + w, y + h, fill=color,
                                    outline="", tags=f"ic{ic['i']}")
-            # اسم الأيقونة تحت الصورة
-            c.create_text(x, y + h + 4, text=ic["name"], fill="#e0e0e0",
-                          anchor="nw", font=("Segoe UI", 8),
-                          tags=f"ic{ic['i']}")
             if ic["i"] in self.selection:
                 c.create_rectangle(x - 2, y - 2, x + w + 2, y + h + 2,
                                    outline="#f9a825", width=2,
