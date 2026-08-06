@@ -32,6 +32,7 @@ import winreg
 from ctypes import wintypes
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 # ==========================================================================
 #  ثوابت Win32
@@ -101,9 +102,193 @@ IMAGE_ICON        = 1
 LR_LOADFROMFILE   = 0x00000010
 IDI_APPLICATION   = 32512
 
+# --- ثوابت استخراج الأيقونات ---
+SHGFI_ICON        = 0x000000100
+SHGFI_LARGEICON   = 0x000000000
+SHGFI_SMALLICON   = 0x000000001
+SHGFI_USEFILEATTRIBUTES = 0x000000010
+
+GCL_HMODULE       = -16
+SRCCOPY           = 0x00CC0020
+DIB_RGB_COLORS    = 0
+
+
+class SHFILEINFOW(ctypes.Structure):
+    _fields_ = [
+        ("hIcon", wintypes.HICON),
+        ("iIcon", ctypes.c_int),
+        ("dwAttributes", wintypes.DWORD),
+        ("szDisplayName", wintypes.WCHAR * 260),
+        ("szTypeName", wintypes.WCHAR * 80),
+    ]
+
+
+class ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", wintypes.HBITMAP),
+        ("hbmColor", wintypes.HBITMAP),
+    ]
+
+
+class BITMAP(ctypes.Structure):
+    _fields_ = [
+        ("bmType", ctypes.c_long),
+        ("bmWidth", ctypes.c_long),
+        ("bmHeight", ctypes.c_long),
+        ("bmWidthBytes", ctypes.c_long),
+        ("bmPlanes", ctypes.c_ushort),
+        ("bmBitsPixel", ctypes.c_ushort),
+        ("bmBits", ctypes.c_void_p),
+    ]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", ctypes.c_long),
+        ("biHeight", ctypes.c_long),
+        ("biPlanes", ctypes.c_ushort),
+        ("biBitCount", ctypes.c_ushort),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", ctypes.c_long),
+        ("biYPelsPerMeter", ctypes.c_long),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class RGBQUAD(ctypes.Structure):
+    _fields_ = [("rgbBlue", ctypes.c_ubyte), ("rgbGreen", ctypes.c_ubyte),
+                ("rgbRed", ctypes.c_ubyte), ("rgbReserved", ctypes.c_ubyte)]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", RGBQUAD * 1)]
+
 
 def MAKEINTRESOURCE(i):
     return ctypes.cast(ctypes.c_void_p(i), ctypes.c_wchar_p)
+
+
+def _hicon_to_pil(hicon, size=32):
+    """تحويل HICON Win32 إلى PIL Image RGBA."""
+    info = ICONINFO()
+    if not user32.GetIconInfo(hicon, ctypes.byref(info)):
+        return None
+    try:
+        if info.hbmColor:
+            bmp = BITMAP()
+            gdi32 = ctypes.windll.gdi32
+            if not gdi32.GetObjectW(info.hbmColor, ctypes.sizeof(BITMAP), ctypes.byref(bmp)):
+                return None
+            w, h = bmp.bmWidth, bmp.bmHeight
+            hdc = user32.GetDC(None)
+            memdc = gdi32.CreateCompatibleDC(hdc)
+            old = gdi32.SelectObject(memdc, info.hbmColor)
+            bih = BITMAPINFOHEADER()
+            bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bih.biWidth = w
+            bih.biHeight = -h
+            bih.biPlanes = 1
+            bih.biBitCount = 32
+            bih.biCompression = 0
+            buf = (ctypes.c_ubyte * (w * h * 4))()
+            gdi32.GetDIBits(memdc, info.hbmColor, 0, h, buf, ctypes.byref(bih), DIB_RGB_COLORS)
+            img = Image.frombuffer("RGBA", (w, h), bytes(buf), "raw", "BGRA", 0, 1)
+            gdi32.SelectObject(memdc, old)
+            gdi32.DeleteDC(memdc)
+            user32.ReleaseDC(None, hdc)
+            if size and (w != size or h != size):
+                img = img.resize((size, size), Image.LANCZOS)
+            return img
+        else:
+            # أيقونة أحادية اللون (mask)
+            gdi32 = ctypes.windll.gdi32
+            bmp = BITMAP()
+            if not gdi32.GetObjectW(info.hbmMask, ctypes.sizeof(BITMAP), ctypes.byref(bmp)):
+                return None
+            w, h = bmp.bmWidth, bmp.bmHeight // 2
+            hdc = user32.GetDC(None)
+            memdc = gdi32.CreateCompatibleDC(hdc)
+            old = gdi32.SelectObject(memdc, info.hbmMask)
+            bih = BITMAPINFOHEADER()
+            bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bih.biWidth = w
+            bih.biHeight = -h * 2
+            bih.biPlanes = 1
+            bih.biBitCount = 32
+            bih.biCompression = 0
+            buf = (ctypes.c_ubyte * (w * h * 2 * 4))()
+            gdi32.GetDIBits(memdc, info.hbmMask, 0, h * 2, buf, ctypes.byref(bih), DIB_RGB_COLORS)
+            # نأخذ النصف السفلي كقناع ألفا
+            data = bytearray(w * h * 4)
+            for y in range(h):
+                for x in range(w):
+                    src = (y * w + x) * 4
+                    dst = (y * w + x) * 4
+                    a = 255 if buf[src] == 0 else 0
+                    data[dst:dst+4] = (0, 0, 0, a)
+            img = Image.frombuffer("RGBA", (w, h), bytes(data), "raw", "BGRA", 0, 1)
+            gdi32.SelectObject(memdc, old)
+            gdi32.DeleteDC(memdc)
+            user32.ReleaseDC(None, hdc)
+            if size and (w != size or h != size):
+                img = img.resize((size, size), Image.LANCZOS)
+            return img
+    finally:
+        gdi32 = ctypes.windll.gdi32
+        if info.hbmMask:
+            gdi32.DeleteObject(info.hbmMask)
+        if info.hbmColor:
+            gdi32.DeleteObject(info.hbmColor)
+
+
+def _get_file_icon(path, size=32):
+    """يستخرج أيقونة ملف/مجلد ويعيد PIL Image."""
+    sfi = SHFILEINFOW()
+    res = shell32.SHGetFileInfoW(path, 0, ctypes.byref(sfi),
+                                 ctypes.sizeof(sfi),
+                                 SHGFI_ICON | SHGFI_LARGEICON)
+    if not res or not sfi.hIcon:
+        return None
+    try:
+        img = _hicon_to_pil(sfi.hIcon, size=size)
+        return img
+    finally:
+        user32.DestroyIcon(sfi.hIcon)
+
+
+def _display_name_to_path(name):
+    """يحاول إيجاد المسار الحقيقي لأيقونة سطح المكتب من اسمها الظاهر."""
+    name_lower = name.lower().strip()
+    candidates = []
+    for base in (os.environ.get("USERPROFILE", ""), os.environ.get("PUBLIC", "")):
+        desktop = os.path.join(base, "Desktop")
+        if os.path.isdir(desktop):
+            candidates.append(desktop)
+    for desktop in candidates:
+        for item in os.listdir(desktop):
+            full = os.path.join(desktop, item)
+            base, ext = os.path.splitext(item)
+            display = base if ext.lower() == ".lnk" else item
+            if display.lower().strip() == name_lower:
+                return full
+    # أيقونات النظام الشائعة
+    system_icons = {
+        "سلة المحذوفات": "::{645FF040-5081-101B-9F08-00AA002F954E}",
+        "recycle bin": "::{645FF040-5081-101B-9F08-00AA002F954E}",
+        "هذا الكمبيوتر": "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "this pc": "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "لوحة التحكم": "::{26EE0668-A00A-44D7-9371-BEB064C98683}",
+        "control panel": "::{26EE0668-A00A-44D7-9371-BEB064C98683}",
+        "شبكة": "::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}",
+        "network": "::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}",
+    }
+    return system_icons.get(name_lower)
 
 
 class POINT(ctypes.Structure):
@@ -706,7 +891,6 @@ class App(ctk.CTk):
         self.area = self._res
 
         # --- tk variables ---
-        self.search_var = tk.StringVar()
         self.var_x = tk.IntVar(value=0)
         self.var_y = tk.IntVar(value=0)
         self.var_step = tk.IntVar(value=10)
@@ -720,7 +904,7 @@ class App(ctk.CTk):
 
         self.nav_buttons = {}
         self.section_frames = {}
-        self.icon_rows = []
+        self.icon_photos = {}
 
         self._build_ui()
         self._apply_saved_theme()
@@ -825,16 +1009,6 @@ class App(ctk.CTk):
         )
         self.header_title.grid(row=0, column=0, sticky="w")
 
-        search = ctk.CTkEntry(
-            header,
-            placeholder_text="بحث…",
-            width=260,
-            textvariable=self.search_var,
-            font=ctk.CTkFont("Segoe UI", 13),
-        )
-        search.grid(row=0, column=1, sticky="e")
-        self.search_var.trace_add("write", lambda *a: self._filter_icons())
-
         # content container
         content = ctk.CTkFrame(main, fg_color="transparent")
         content.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 20))
@@ -866,22 +1040,21 @@ class App(ctk.CTk):
     def _build_icons_section(self, parent):
         frame = ctk.CTkFrame(parent)
         self.section_frames["icons"] = frame
-        frame.grid_columnconfigure(0, weight=6)
-        frame.grid_columnconfigure(1, weight=4)
+        frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
 
-        # mini-map card
+        # خريطة كبيرة تملأ الشاشة
         map_card = ctk.CTkFrame(frame)
-        map_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        map_card.grid(row=0, column=0, sticky="nsew")
         map_card.grid_rowconfigure(0, weight=1)
         map_card.grid_columnconfigure(0, weight=1)
 
         wx, wy, ww, wh = self.area
-        self.map_w = 500
-        self.map_h = max(240, int(self.map_w * wh / max(1, ww)))
+        self.map_w = 1100
+        self.map_h = max(500, int(self.map_w * wh / max(1, ww)))
         self.canvas = tk.Canvas(
             map_card,
-            bg="#1e1e2e",
+            bg="#14141b",
             highlightthickness=0,
             width=self.map_w,
             height=self.map_h,
@@ -891,75 +1064,38 @@ class App(ctk.CTk):
         self.canvas.bind("<B1-Motion>", self._map_drag)
         self.canvas.bind("<ButtonRelease-1>", self._map_release)
 
-        # right column
-        right = ctk.CTkFrame(frame)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(0, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-
-        list_card = ctk.CTkFrame(right)
-        list_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
-        list_card.grid_rowconfigure(0, weight=1)
-        list_card.grid_columnconfigure(0, weight=1)
-
-        self.icon_list_frame = ctk.CTkScrollableFrame(
-            list_card,
-            label_text="قائمة الأيقونات",
-            fg_color="transparent",
-        )
-        self.icon_list_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        self.icon_list_frame.grid_columnconfigure(0, weight=1)
-
-        # action buttons
-        ctrl = ctk.CTkFrame(right, fg_color="transparent")
-        ctrl.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
-        ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        # شريط أدوات سفلي
+        toolbar = ctk.CTkFrame(frame, fg_color="transparent")
+        toolbar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
 
         self.btn_hide = ctk.CTkButton(
-            ctrl,
-            text="🙈 إخفاء",
-            command=self._toggle_hide,
+            toolbar, text="🙈 إخفاء", width=90, command=self._toggle_hide
         )
-        self.btn_hide.grid(row=0, column=0, padx=4, sticky="ew")
-        ctk.CTkButton(
-            ctrl,
-            text="🧲 محاذاة للشبكة",
-            command=self._snap,
-        ).grid(row=0, column=1, padx=4, sticky="ew")
-        ctk.CTkButton(
-            ctrl,
-            text="🔄 تحديث",
-            command=self.refresh_icons,
-        ).grid(row=0, column=2, padx=4, sticky="ew")
-        ctk.CTkButton(
-            ctrl,
-            text="❌ إلغاء التحديد",
-            command=self._clear_selection,
-        ).grid(row=0, column=3, padx=4, sticky="ew")
+        self.btn_hide.pack(side="left", padx=4)
+        ctk.CTkButton(toolbar, text="🧲 محاذاة للشبكة", width=130,
+                      command=self._snap).pack(side="left", padx=4)
+        ctk.CTkButton(toolbar, text="🔄 تحديث", width=90,
+                      command=self.refresh_icons).pack(side="left", padx=4)
+        ctk.CTkButton(toolbar, text="❌ إلغاء التحديد", width=130,
+                      command=self._clear_selection).pack(side="left", padx=4)
 
-        # direct coordinate move
-        coord = ctk.CTkFrame(right, fg_color="transparent")
-        coord.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
-        ctk.CTkLabel(coord, text="X:").grid(row=0, column=0, padx=(0, 4))
-        ctk.CTkEntry(coord, width=70, textvariable=self.var_x).grid(row=0, column=1, padx=4)
-        ctk.CTkLabel(coord, text="Y:").grid(row=0, column=2, padx=(0, 4))
-        ctk.CTkEntry(coord, width=70, textvariable=self.var_y).grid(row=0, column=3, padx=4)
-        ctk.CTkButton(coord, text="📍 نقل", width=70, command=self._move_to_xy).grid(row=0, column=4, padx=(8, 0))
+        ctk.CTkLabel(toolbar, text="X:").pack(side="left", padx=(20, 2))
+        ctk.CTkEntry(toolbar, width=70, textvariable=self.var_x).pack(side="left", padx=2)
+        ctk.CTkLabel(toolbar, text="Y:").pack(side="left", padx=(8, 2))
+        ctk.CTkEntry(toolbar, width=70, textvariable=self.var_y).pack(side="left", padx=2)
+        ctk.CTkButton(toolbar, text="📍 نقل", width=70,
+                      command=self._move_to_xy).pack(side="left", padx=(8, 4))
 
-        # nudge controls
-        move = ctk.CTkFrame(right, fg_color="transparent")
-        move.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
-
-        ctk.CTkLabel(move, text="خطوة:").grid(row=0, column=0, padx=(0, 4))
-        ctk.CTkEntry(move, width=60, textvariable=self.var_step).grid(row=0, column=1, padx=4)
-        ctk.CTkButton(move, text="⬆", width=36, command=lambda: self._nudge(0, -1)).grid(
-            row=0, column=2, padx=4)
-        ctk.CTkButton(move, text="⬅", width=36, command=lambda: self._nudge(-1, 0)).grid(
-            row=0, column=3, padx=4)
-        ctk.CTkButton(move, text="➡", width=36, command=lambda: self._nudge(1, 0)).grid(
-            row=0, column=4, padx=4)
-        ctk.CTkButton(move, text="⬇", width=36, command=lambda: self._nudge(0, 1)).grid(
-            row=0, column=5, padx=4)
+        ctk.CTkLabel(toolbar, text="خطوة:").pack(side="left", padx=(16, 2))
+        ctk.CTkEntry(toolbar, width=55, textvariable=self.var_step).pack(side="left", padx=2)
+        ctk.CTkButton(toolbar, text="⬆", width=36,
+                      command=lambda: self._nudge(0, -1)).pack(side="left", padx=2)
+        ctk.CTkButton(toolbar, text="⬇", width=36,
+                      command=lambda: self._nudge(0, 1)).pack(side="left", padx=2)
+        ctk.CTkButton(toolbar, text="⬅", width=36,
+                      command=lambda: self._nudge(-1, 0)).pack(side="left", padx=2)
+        ctk.CTkButton(toolbar, text="➡", width=36,
+                      command=lambda: self._nudge(1, 0)).pack(side="left", padx=2)
 
     def _build_look_section(self, parent):
         frame = ctk.CTkFrame(parent)
@@ -1214,93 +1350,18 @@ class App(ctk.CTk):
     # ==================================================================
     #  Icon list helpers
     # ==================================================================
-    def _rebuild_icon_list(self):
-        for row in self.icon_rows:
-            row["frame"].destroy()
-        self.icon_rows = []
-        self.selection = set()
-
-        for ic in self.icons:
-            idx = ic["i"]
-            card = ctk.CTkFrame(self.icon_list_frame, fg_color="transparent", corner_radius=6)
-            card.grid_columnconfigure(1, weight=1)
-
-            var = tk.BooleanVar(value=False)
-            chk = ctk.CTkCheckBox(card, text="", variable=var, width=20)
-            chk.configure(command=lambda i=idx, v=var: self._row_toggle(i, v.get()))
-            chk.grid(row=0, column=0, padx=5)
-
-            name_lbl = ctk.CTkLabel(card, text=ic["name"], anchor="w")
-            name_lbl.grid(row=0, column=1, sticky="w", padx=5)
-            name_lbl.bind("<Button-1>", lambda e, i=idx: self._select(i, only=True))
-
-            coords_lbl = ctk.CTkLabel(
-                card,
-                text=f"({ic['x']}, {ic['y']})",
-                anchor="e",
-                width=80,
-            )
-            coords_lbl.grid(row=0, column=2, padx=5)
-            coords_lbl.bind("<Button-1>", lambda e, i=idx: self._select(i, only=True))
-
-            card.grid(row=len(self.icon_rows), column=0, sticky="ew", pady=2)
-            self.icon_rows.append({
-                "index": idx,
-                "frame": card,
-                "name_lbl": name_lbl,
-                "coords_lbl": coords_lbl,
-                "var": var,
-                "name": ic["name"].lower(),
-            })
-        self._filter_icons()
-
-    def _filter_icons(self):
-        term = self.search_var.get().lower().strip()
-        for row in self.icon_rows:
-            if not term or term in row["name"]:
-                row["frame"].grid()
-            else:
-                row["frame"].grid_remove()
-
     def _select(self, idx, only=False):
         if only:
             self.selection = {idx}
         else:
             self.selection.add(idx)
-        self._update_selection_vars()
-        self._update_row_visuals()
-        self._on_select()
-        self._draw_map()
-
-    def _row_toggle(self, idx, selected):
-        if selected:
-            self.selection.add(idx)
-        else:
-            self.selection.discard(idx)
-        self._update_selection_vars()
-        self._update_row_visuals()
         self._on_select()
         self._draw_map()
 
     def _clear_selection(self):
         self.selection.clear()
-        self._update_selection_vars()
-        self._update_row_visuals()
         self._on_select()
         self._draw_map()
-
-    def _update_selection_vars(self):
-        for row in self.icon_rows:
-            val = row["index"] in self.selection
-            if row["var"].get() != val:
-                row["var"].set(val)
-
-    def _update_row_visuals(self):
-        for row in self.icon_rows:
-            if row["index"] in self.selection:
-                row["frame"].configure(fg_color=("gray85", "gray25"))
-            else:
-                row["frame"].configure(fg_color="transparent")
 
     # ==================================================================
     #  Core backend (kept/reimplemented)
@@ -1320,13 +1381,23 @@ class App(ctk.CTk):
             messagebox.showerror("خطأ", str(exc))
             self._set_status("تعذّرت قراءة الأيقونات")
             return
-        self._rebuild_icon_list()
+        self._load_icon_images()
         self._draw_map()
         cur = self.ctl.get_icon_size()
         self.lbl_size.configure(
             text=f"حجم الأيقونات: {cur if cur else 'غير معروف'} بكسل")
         self._res_lbl.configure(text=self._res_key(self.ctl.work_area()))
         self._set_status(f"✅ {len(self.icons)} أيقونة")
+
+    def _load_icon_images(self):
+        self.icon_photos = {}
+        size = max(24, min(64, self.ctl.get_icon_size() or 48))
+        for ic in self.icons:
+            path = _display_name_to_path(ic["name"])
+            img = _get_file_icon(path, size=size) if path else None
+            if img is None:
+                img = Image.new("RGBA", (size, size), (79, 195, 247, 255))
+            self.icon_photos[ic["i"]] = ImageTk.PhotoImage(img)
 
     def _draw_map(self):
         c = self.canvas
@@ -1338,10 +1409,24 @@ class App(ctk.CTk):
         for ic in self.icons:
             x = (ic["x"] - wx) * sx
             y = (ic["y"] - wy) * sy
-            selected = ic["i"] in self.selection
-            color = "#f9a825" if selected else "#4fc3f7"
-            c.create_rectangle(x, y, x + 10, y + 10, fill=color,
-                               outline="", tags=f"ic{ic['i']}")
+            photo = self.icon_photos.get(ic["i"])
+            w = h = 10
+            if photo:
+                w, h = photo.width(), photo.height()
+                c.create_image(x, y, image=photo, anchor="nw",
+                               tags=f"ic{ic['i']}")
+            else:
+                color = "#f9a825" if ic["i"] in self.selection else "#4fc3f7"
+                c.create_rectangle(x, y, x + w, y + h, fill=color,
+                                   outline="", tags=f"ic{ic['i']}")
+            # اسم الأيقونة تحت الصورة
+            c.create_text(x, y + h + 4, text=ic["name"], fill="#e0e0e0",
+                          anchor="nw", font=("Segoe UI", 8),
+                          tags=f"ic{ic['i']}")
+            if ic["i"] in self.selection:
+                c.create_rectangle(x - 2, y - 2, x + w + 2, y + h + 2,
+                                   outline="#f9a825", width=2,
+                                   tags=f"sel{ic['i']}")
 
     def _selected_index(self):
         if not self.selection:
@@ -1360,10 +1445,6 @@ class App(ctk.CTk):
         self.ctl.set_position(i, x, y)
         if i < len(self.icons):
             self.icons[i]["x"], self.icons[i]["y"] = x, y
-            for row in self.icon_rows:
-                if row["index"] == i:
-                    row["coords_lbl"].configure(text=f"({x}, {y})")
-                    break
         self._draw_map()
 
     def _move_to_xy(self):
@@ -1400,7 +1481,10 @@ class App(ctk.CTk):
         for ic in self.icons:
             x = (ic["x"] - wx) * sx
             y = (ic["y"] - wy) * sy
-            if x - 6 <= mx <= x + 16 and y - 6 <= my <= y + 16:
+            photo = self.icon_photos.get(ic["i"])
+            w = photo.width() if photo else 10
+            h = photo.height() if photo else 10
+            if x <= mx <= x + w and y <= my <= y + h:
                 return ic["i"]
         return None
 
