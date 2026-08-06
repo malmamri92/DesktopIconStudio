@@ -1093,6 +1093,8 @@ class App(ctk.CTk):
         wx, wy, ww, wh = self.area
         self.map_w = 1100
         self.map_h = max(500, int(self.map_w * wh / max(1, ww)))
+        self._scale = 1.0
+        self._map_offset = (0.0, 0.0)
         self.canvas = tk.Canvas(
             map_card,
             bg="#14141b",
@@ -1464,10 +1466,9 @@ class App(ctk.CTk):
         max_x = max(max_x, wx + ww)
         max_y = max(max_y, wy + wh)
         self.map_bbox = (min_x - pad, min_y - pad, max_x + pad, max_y + pad)
-        # تحديث ارتفاع الخريطة بنسبة الإطار المحيط بالأيقونات
-        bw = max(1, max_x - min_x + pad * 2)
-        bh = max(1, max_y - min_y + pad * 2)
-        self.map_h = max(500, int(self.map_w * bh / bw))
+        # اجعل أبعاد الخريطة بنفس نسبة شاشة سطح المكتب الفعلية
+        wx, wy, ww, wh = self.area
+        self.map_h = max(500, int(self.map_w * wh / max(1, ww)))
         if hasattr(self, "canvas"):
             self.canvas.config(width=self.map_w, height=self.map_h)
 
@@ -1487,12 +1488,15 @@ class App(ctk.CTk):
         bx, by, bx2, by2 = self.map_bbox
         bw = max(1, bx2 - bx)
         bh = max(1, by2 - by)
-        sx = self.map_w / bw
-        sy = self.map_h / bh
-        self._scale = (sx, sy)
+        # نسبة ثابتة بنفس شكل الشاشة، مع مراعاة وضع الإطار في المنتصف
+        s = min(self.map_w / bw, self.map_h / bh)
+        off_x = (self.map_w - bw * s) / 2
+        off_y = (self.map_h - bh * s) / 2
+        self._scale = s
+        self._map_offset = (off_x, off_y)
         for ic in self.icons:
-            x = (ic["x"] - bx) * sx
-            y = (ic["y"] - by) * sy
+            x = (ic["x"] - bx) * s + off_x
+            y = (ic["y"] - by) * s + off_y
             photo = self.icon_photos.get(ic["i"])
             w = h = 10
             if photo:
@@ -1551,16 +1555,18 @@ class App(ctk.CTk):
         self.ctl.refresh_view()
 
     def _map_to_desktop(self, mx, my):
-        sx, sy = self._scale
+        s = self._scale
+        off_x, off_y = self._map_offset
         bx, by = self.map_bbox[0], self.map_bbox[1]
-        return int(mx / sx + bx), int(my / sy + by)
+        return int((mx - off_x) / s + bx), int((my - off_y) / s + by)
 
     def _icon_at(self, mx, my):
-        sx, sy = self._scale
+        s = self._scale
+        off_x, off_y = self._map_offset
         bx, by = self.map_bbox[0], self.map_bbox[1]
         for ic in self.icons:
-            x = (ic["x"] - bx) * sx
-            y = (ic["y"] - by) * sy
+            x = (ic["x"] - bx) * s + off_x
+            y = (ic["y"] - by) * s + off_y
             photo = self.icon_photos.get(ic["i"])
             w = photo.width() if photo else 10
             h = photo.height() if photo else 10
