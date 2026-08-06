@@ -15,7 +15,7 @@
   * إخفاء/إظهار أيقونات سطح المكتب بنقرة واحدة.
   * أيقونة بجانب الساعة (System Tray) + اختصارات كيبورد عالمية.
 
-يعمل ببايثون القياسي فقط — بدون أي مكتبات خارجية.
+يعمل بـ Python + customtkinter لواجهة احترافية حديثة.
 التشغيل:  python desktop_icon_studio.py
 """
 
@@ -27,8 +27,11 @@ import queue
 import sys
 import threading
 import time
+import tkinter as tk
 import winreg
 from ctypes import wintypes
+
+import customtkinter as ctk
 
 # ==========================================================================
 #  ثوابت Win32
@@ -658,19 +661,30 @@ class TrayManager(threading.Thread):
 # ==========================================================================
 #  الواجهة الرسومية
 # ==========================================================================
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import messagebox, filedialog
 
-FONT = ("Segoe UI", 10)
-FONT_B = ("Segoe UI", 10, "bold")
+FONT = ("Segoe UI", 12)
+FONT_B = ("Segoe UI", 12, "bold")
+SMALL = ("Segoe UI", 11)
 
 
-class App(tk.Tk):
+class App(ctk.CTk):
+    SECTIONS = {
+        "icons": "🖥️ الأيقونات",
+        "look": "🎨 المظهر",
+        "arrange": "📐 الترتيب",
+        "layouts": "💾 التخطيطات",
+        "display": "🖥️ الدقة",
+        "settings": "⚙️ الإعدادات",
+    }
+
     def __init__(self):
         super().__init__()
-        self.title("🖥️ استوديو أيقونات سطح المكتب v2")
-        self.geometry("1080x720")
-        self.minsize(980, 660)
+        ctk.set_appearance_mode("Dark")
+        ctk.set_default_color_theme("blue")
+        self.title("Desktop Icon Studio")
+        self.geometry("1280x850")
+        self.minsize(1080, 760)
 
         try:
             self.ctl = DesktopController()
@@ -684,15 +698,34 @@ class App(tk.Tk):
         self.settings = SettingsStore(os.path.join(base, "settings.json"))
 
         self.icons = []
+        self.selection = set()
         self.drag_index = None
         self.hidden = False
         self._size_busy = False
         self._res = self.ctl.work_area()
+        self.area = self._res
 
-        self._apply_theme(self.settings.get("theme", "dark"))
+        # --- tk variables ---
+        self.search_var = tk.StringVar()
+        self.var_x = tk.IntVar(value=0)
+        self.var_y = tk.IntVar(value=0)
+        self.var_step = tk.IntVar(value=10)
+        self.var_size = tk.IntVar(value=48)
+        self.var_sx = tk.IntVar(value=DEFAULT_SPACING)
+        self.var_sy = tk.IntVar(value=DEFAULT_SPACING)
+        self.var_lname = tk.StringVar(value="تخطيطي")
+        self._auto_save_res = tk.BooleanVar(value=True)
+        self.theme_var = tk.StringVar(value="Dark")
+        self.status = tk.StringVar(value="جاهز")
+
+        self.nav_buttons = {}
+        self.section_frames = {}
+        self.icon_rows = []
+
         self._build_ui()
+        self._apply_saved_theme()
 
-        # Tray + hotkeys
+        # --- tray + hotkeys ---
         self.tray_q = queue.Queue()
         icon_path = os.path.join(base, "icon.ico")
         self.tray = TrayManager(self.tray_q, icon_path=icon_path)
@@ -700,14 +733,16 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._poll_tray_queue)
         self.after(2000, self._check_resolution)
-
         self.after(300, self.refresh_icons)
 
+    # ==================================================================
+    #  Window / theme
+    # ==================================================================
     def _set_title_bar_dark(self, dark=True):
         """تفعيل الوضع الداكن لشريط عنوان النافذة في ويندوز 10/11."""
         try:
             hwnd = wintypes.HWND(self.winfo_id())
-            value = wintypes.BOOL(1 if dark else 0)
+            value = ctypes.c_int(1 if dark else 0)
             dwm = ctypes.windll.dwmapi
             for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
                 try:
@@ -720,383 +755,555 @@ class App(tk.Tk):
             pass
 
     def _apply_theme(self, theme_name="dark"):
-        """تطبيق ثيم داكن أو فاتح على كل عناصر الواجهة."""
-        if theme_name == "light":
-            BG_MAIN = "#f0f0f0"
-            BG_CARD = "#ffffff"
-            FG_MAIN = "#222222"
-            ACCENT = "#1976d2"
-            ACCENT_DARK = "#145a9e"
-            CANVAS_BG = "#e3f2fd"
-        else:  # dark
-            BG_MAIN = "#0d0d0d"
-            BG_CARD = "#181818"
-            FG_MAIN = "#e0e0e0"
-            ACCENT = "#4fc3f7"
-            ACCENT_DARK = "#3a8db5"
-            CANVAS_BG = "#12121a"
+        mode = theme_name.capitalize() if theme_name in ("dark", "light") else "System"
+        ctk.set_appearance_mode(mode)
+        self._set_title_bar_dark(dark=(theme_name != "light"))
 
-        self._theme = theme_name
-        self.configure(bg=BG_MAIN)
-        self.tk_setPalette(
-            background=BG_MAIN, foreground=FG_MAIN,
-            activeBackground=ACCENT, activeForeground="#000",
-            selectBackground=ACCENT, selectForeground="#000",
-            highlightBackground=BG_CARD, highlightColor=ACCENT)
+    def _apply_saved_theme(self):
+        stored = self.settings.get("theme", "dark")
+        self.theme_var.set(stored.capitalize())
+        self._apply_theme(stored)
 
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure(".", background=BG_MAIN, foreground=FG_MAIN,
-                        fieldbackground=BG_CARD, font=FONT)
-        style.configure("TFrame", background=BG_MAIN)
-        style.configure("TLabel", background=BG_MAIN, foreground=FG_MAIN)
-        style.configure("TButton", background=BG_CARD, foreground=FG_MAIN,
-                        bordercolor=BG_CARD, lightcolor=BG_CARD,
-                        darkcolor=BG_CARD, focusthickness=0)
-        style.map("TButton",
-                  background=[("active", ACCENT), ("pressed", ACCENT_DARK)],
-                  foreground=[("active", "#000"), ("pressed", "#000")])
-        style.configure("TNotebook", background=BG_MAIN, tabmargins=[2, 5, 2, 0])
-        style.configure("TNotebook.Tab", background=BG_CARD, foreground=FG_MAIN,
-                        padding=[10, 4])
-        style.map("TNotebook.Tab",
-                  background=[("selected", ACCENT)],
-                  foreground=[("selected", "#000")],
-                  expand=[("selected", [2, 2, 2, 0])])
-        style.configure("TLabelframe", background=BG_MAIN, foreground=ACCENT)
-        style.configure("TLabelframe.Label", background=BG_MAIN, foreground=ACCENT)
-        style.configure("TEntry", fieldbackground=BG_CARD, foreground=FG_MAIN,
-                        insertcolor=FG_MAIN)
-        style.configure("TCombobox", fieldbackground=BG_CARD, foreground=FG_MAIN,
-                        selectbackground=ACCENT)
-        style.map("TCombobox",
-                  fieldbackground=[("readonly", BG_CARD), ("active", BG_CARD)],
-                  selectbackground=[("readonly", ACCENT)])
-        style.configure("TCheckbutton", background=BG_MAIN, foreground=FG_MAIN)
-        style.configure("Treeview", background=BG_CARD, foreground=FG_MAIN,
-                        fieldbackground=BG_CARD, rowheight=22)
-        style.configure("Treeview.Heading", background=BG_CARD, foreground=FG_MAIN)
-        style.map("Treeview",
-                  background=[("selected", ACCENT), ("focus", ACCENT)],
-                  foreground=[("selected", "#000"), ("focus", "#000")])
-        style.configure("TScrollbar", background=BG_CARD, troughcolor=BG_MAIN,
-                        bordercolor=BG_MAIN, arrowcolor=FG_MAIN)
-        style.map("TScrollbar", background=[("active", ACCENT)])
-        style.configure("Horizontal.TScale", background=BG_MAIN, troughcolor=BG_CARD)
-
-        # تحديث عناصر tk الموجودة (ttk تتحدث تلقائيًا عبر الأنماط)
-        for widget in self._all_tk_widgets():
-            if isinstance(widget, tk.Canvas):
-                widget.config(bg=CANVAS_BG)
-            elif isinstance(widget, tk.Scale):
-                widget.config(bg=BG_MAIN, fg=ACCENT, troughcolor=BG_CARD,
-                              activebackground=ACCENT)
-            elif isinstance(widget, tk.Spinbox):
-                widget.config(bg=BG_CARD, fg=FG_MAIN, insertbackground=FG_MAIN,
-                              buttonbackground=ACCENT,
-                              highlightbackground=BG_CARD, highlightcolor=ACCENT)
-            elif isinstance(widget, (tk.Frame, tk.Tk)):
-                widget.config(bg=BG_MAIN)
-
-        self._set_title_bar_dark(dark=(theme_name == "dark"))
-
-    def _all_tk_widgets(self, widget=None):
-        if widget is None:
-            widget = self
-        children = []
-        for w in widget.winfo_children():
-            children.append(w)
-            children.extend(self._all_tk_widgets(w))
-        return children
-
-    def _spinbox(self, parent, **kwargs):
-        defaults = {"bg": "#2d2d44", "fg": "#e0e0e0",
-                    "insertbackground": "#e0e0e0", "buttonbackground": "#4fc3f7",
-                    "borderwidth": 1, "highlightthickness": 1,
-                    "highlightbackground": "#2d2d44", "highlightcolor": "#4fc3f7"}
-        defaults.update(kwargs)
-        return tk.Spinbox(parent, **defaults)
-
-    def _scale(self, parent, **kwargs):
-        defaults = {"bg": "#1e1e2e", "fg": "#4fc3f7", "troughcolor": "#2d2d44",
-                    "highlightthickness": 0, "activebackground": "#4fc3f7",
-                    "borderwidth": 0}
-        defaults.update(kwargs)
-        return tk.Scale(parent, **defaults)
-
-    # ------------------------------------------------------------------ UI
+    # ==================================================================
+    #  UI builders
+    # ==================================================================
     def _build_ui(self):
-        root = ttk.Frame(self, padding=8)
-        root.pack(fill="both", expand=True)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        left = ttk.LabelFrame(root, text=" خريطة سطح المكتب (انقر لتحديد أيقونة — اسحبها لتحريكها) ",
-                              padding=6)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        # --- sidebar ---
+        sidebar = ctk.CTkFrame(self, width=230, corner_radius=0)
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_rowconfigure(1, weight=1)
+        sidebar.grid_propagate(False)
 
-        wx, wy, ww, wh = self.ctl.work_area()
-        self.area = (wx, wy, ww, wh)
-        self.map_w = 430
-        self.map_h = max(220, int(self.map_w * wh / max(1, ww)))
-        self.canvas = tk.Canvas(left, width=self.map_w, height=self.map_h,
-                                bg="#1e1e2e", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=False)
+        ctk.CTkLabel(
+            sidebar,
+            text="Desktop Icon\nStudio",
+            font=ctk.CTkFont("Segoe UI", 22, "bold"),
+        ).grid(row=0, column=0, pady=(24, 16), padx=20)
+
+        nav_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        nav_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=10)
+
+        for key, label in self.SECTIONS.items():
+            btn = ctk.CTkButton(
+                nav_frame,
+                text=label,
+                anchor="w",
+                height=42,
+                font=ctk.CTkFont("Segoe UI", 14),
+                fg_color="transparent",
+                hover_color=("gray70", "gray35"),
+                command=lambda k=key: self._show_section(k),
+            )
+            btn.pack(fill="x", pady=4)
+            self.nav_buttons[key] = btn
+
+        ctk.CTkLabel(
+            sidebar,
+            textvariable=self.status,
+            anchor="w",
+            font=ctk.CTkFont("Segoe UI", 11),
+        ).grid(row=2, column=0, sticky="ew", padx=12, pady=12)
+
+        # --- main area ---
+        main = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        main.grid(row=0, column=1, sticky="nsew")
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(1, weight=1)
+
+        # header
+        header = ctk.CTkFrame(main, height=70, corner_radius=0, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 10))
+        header.grid_columnconfigure(0, weight=1)
+
+        self.header_title = ctk.CTkLabel(
+            header,
+            text="🖥️ الأيقونات",
+            font=ctk.CTkFont("Segoe UI", 24, "bold"),
+        )
+        self.header_title.grid(row=0, column=0, sticky="w")
+
+        search = ctk.CTkEntry(
+            header,
+            placeholder_text="بحث…",
+            width=260,
+            textvariable=self.search_var,
+            font=ctk.CTkFont("Segoe UI", 13),
+        )
+        search.grid(row=0, column=1, sticky="e")
+        self.search_var.trace_add("write", lambda *a: self._filter_icons())
+
+        # content container
+        content = ctk.CTkFrame(main, fg_color="transparent")
+        content.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 20))
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        self._build_icons_section(content)
+        self._build_look_section(content)
+        self._build_arrange_section(content)
+        self._build_layouts_section(content)
+        self._build_display_section(content)
+        self._build_settings_section(content)
+
+        self._show_section("icons")
+
+    def _show_section(self, key):
+        for k, frame in self.section_frames.items():
+            if k == key:
+                frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                frame.grid_forget()
+        for k, btn in self.nav_buttons.items():
+            if k == key:
+                btn.configure(fg_color=("gray75", "gray30"))
+            else:
+                btn.configure(fg_color="transparent")
+        self.header_title.configure(text=self.SECTIONS[key])
+
+    def _build_icons_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["icons"] = frame
+        frame.grid_columnconfigure(0, weight=6)
+        frame.grid_columnconfigure(1, weight=4)
+        frame.grid_rowconfigure(0, weight=1)
+
+        # mini-map card
+        map_card = ctk.CTkFrame(frame)
+        map_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        map_card.grid_rowconfigure(0, weight=1)
+        map_card.grid_columnconfigure(0, weight=1)
+
+        wx, wy, ww, wh = self.area
+        self.map_w = 500
+        self.map_h = max(240, int(self.map_w * wh / max(1, ww)))
+        self.canvas = tk.Canvas(
+            map_card,
+            bg="#1e1e2e",
+            highlightthickness=0,
+            width=self.map_w,
+            height=self.map_h,
+        )
+        self.canvas.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.canvas.bind("<Button-1>", self._map_press)
         self.canvas.bind("<B1-Motion>", self._map_drag)
         self.canvas.bind("<ButtonRelease-1>", self._map_release)
 
-        ttk.Button(left, text="🔄 تحديث القائمة", command=self.refresh_icons
-                   ).pack(fill="x", pady=(8, 0))
+        # right column
+        right = ctk.CTkFrame(frame)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
-        right = ttk.Frame(root)
-        right.pack(side="left", fill="both", expand=True)
+        list_card = ctk.CTkFrame(right)
+        list_card.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
+        list_card.grid_rowconfigure(0, weight=1)
+        list_card.grid_columnconfigure(0, weight=1)
 
-        nb = ttk.Notebook(right)
-        nb.pack(fill="both", expand=True)
+        self.icon_list_frame = ctk.CTkScrollableFrame(
+            list_card,
+            label_text="قائمة الأيقونات",
+            fg_color="transparent",
+        )
+        self.icon_list_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.icon_list_frame.grid_columnconfigure(0, weight=1)
 
-        tab_move = ttk.Frame(nb, padding=8)
-        tab_look = ttk.Frame(nb, padding=8)
-        tab_arrange = ttk.Frame(nb, padding=8)
-        tab_layout = ttk.Frame(nb, padding=8)
-        tab_res = ttk.Frame(nb, padding=8)
-        tab_appear = ttk.Frame(nb, padding=8)
-        nb.add(tab_move, text=" الأيقونات والتحريك ")
-        nb.add(tab_look, text=" الحجم والمسافات ")
-        nb.add(tab_arrange, text=" الترتيب التلقائي ")
-        nb.add(tab_layout, text=" التخطيطات ")
-        nb.add(tab_res, text=" دقة الشاشة ")
-        nb.add(tab_appear, text=" المظهر ")
+        # action buttons
+        ctrl = ctk.CTkFrame(right, fg_color="transparent")
+        ctrl.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        self._build_move_tab(tab_move)
-        self._build_look_tab(tab_look)
-        self._build_arrange_tab(tab_arrange)
-        self._build_layout_tab(tab_layout)
-        self._build_resolution_tab(tab_res)
-        self._build_appearance_tab(tab_appear)
+        self.btn_hide = ctk.CTkButton(
+            ctrl,
+            text="🙈 إخفاء",
+            command=self._toggle_hide,
+        )
+        self.btn_hide.grid(row=0, column=0, padx=4, sticky="ew")
+        ctk.CTkButton(
+            ctrl,
+            text="🧲 محاذاة للشبكة",
+            command=self._snap,
+        ).grid(row=0, column=1, padx=4, sticky="ew")
+        ctk.CTkButton(
+            ctrl,
+            text="🔄 تحديث",
+            command=self.refresh_icons,
+        ).grid(row=0, column=2, padx=4, sticky="ew")
+        ctk.CTkButton(
+            ctrl,
+            text="❌ إلغاء التحديد",
+            command=self._clear_selection,
+        ).grid(row=0, column=3, padx=4, sticky="ew")
 
-        self.status = tk.StringVar(value="جاهز")
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", side="bottom")
-        ttk.Label(bar, textvariable=self.status, anchor="w",
-                  font=("Segoe UI", 9)).pack(side="left", padx=8, pady=2)
+        # direct coordinate move
+        coord = ctk.CTkFrame(right, fg_color="transparent")
+        coord.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
+        ctk.CTkLabel(coord, text="X:").grid(row=0, column=0, padx=(0, 4))
+        ctk.CTkEntry(coord, width=70, textvariable=self.var_x).grid(row=0, column=1, padx=4)
+        ctk.CTkLabel(coord, text="Y:").grid(row=0, column=2, padx=(0, 4))
+        ctk.CTkEntry(coord, width=70, textvariable=self.var_y).grid(row=0, column=3, padx=4)
+        ctk.CTkButton(coord, text="📍 نقل", width=70, command=self._move_to_xy).grid(row=0, column=4, padx=(8, 0))
 
-        hint = ("💡 لتثبيت الأماكن يدويًا: زر أيمن على سطح المكتب ← عرض ← "
-                "ألغِ «ترتيب الأيقونات تلقائيًا»")
-        ttk.Label(bar, text=hint, anchor="e", foreground="#888",
-                  font=("Segoe UI", 9)).pack(side="right", padx=8)
+        # nudge controls
+        move = ctk.CTkFrame(right, fg_color="transparent")
+        move.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
 
-    def _build_move_tab(self, tab):
-        cols = ("name", "x", "y")
-        self.tree = ttk.Treeview(tab, columns=cols, show="headings", height=10)
-        self.tree.heading("name", text="الأيقونة")
-        self.tree.heading("x", text="X")
-        self.tree.heading("y", text="Y")
-        self.tree.column("name", width=230, anchor="w")
-        self.tree.column("x", width=55, anchor="center")
-        self.tree.column("y", width=55, anchor="center")
-        sb = ttk.Scrollbar(tab, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="top", fill="both", expand=True)
-        sb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        ctk.CTkLabel(move, text="خطوة:").grid(row=0, column=0, padx=(0, 4))
+        ctk.CTkEntry(move, width=60, textvariable=self.var_step).grid(row=0, column=1, padx=4)
+        ctk.CTkButton(move, text="⬆", width=36, command=lambda: self._nudge(0, -1)).grid(
+            row=0, column=2, padx=4)
+        ctk.CTkButton(move, text="⬅", width=36, command=lambda: self._nudge(-1, 0)).grid(
+            row=0, column=3, padx=4)
+        ctk.CTkButton(move, text="➡", width=36, command=lambda: self._nudge(1, 0)).grid(
+            row=0, column=4, padx=4)
+        ctk.CTkButton(move, text="⬇", width=36, command=lambda: self._nudge(0, 1)).grid(
+            row=0, column=5, padx=4)
 
-        mv = ttk.LabelFrame(tab, text=" تحريك الأيقونة المحددة ", padding=8)
-        mv.pack(fill="x", pady=8)
+    def _build_look_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["look"] = frame
+        frame.grid_columnconfigure(0, weight=1)
 
-        row = ttk.Frame(mv)
-        row.pack(fill="x")
-        ttk.Label(row, text="X:", font=FONT).pack(side="left")
-        self.var_x = tk.IntVar(value=0)
-        self._spinbox(row, from_=0, to=10000, width=7, font=FONT,
-                   textvariable=self.var_x).pack(side="left", padx=(2, 12))
-        ttk.Label(row, text="Y:", font=FONT).pack(side="left")
-        self.var_y = tk.IntVar(value=0)
-        self._spinbox(row, from_=0, to=10000, width=7, font=FONT,
-                   textvariable=self.var_y).pack(side="left", padx=(2, 12))
-        ttk.Button(row, text="📍 نقل إلى هذه النقطة",
-                   command=self._move_to_xy).pack(side="left")
+        # icon size
+        size_card = ctk.CTkFrame(frame)
+        size_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        size_card.grid_columnconfigure(0, weight=1)
 
-        row2 = ttk.Frame(mv)
-        row2.pack(pady=6)
-        ttk.Label(row2, text="خطوة التحريك:", font=FONT).grid(
-            row=0, column=0, rowspan=3, padx=(0, 10))
-        self.var_step = tk.IntVar(value=10)
-        self._spinbox(row2, from_=1, to=500, width=6, font=FONT,
-                   textvariable=self.var_step).grid(row=1, column=1, padx=(0, 14))
-        ttk.Button(row2, text="⬆", width=4,
-                   command=lambda: self._nudge(0, -1)).grid(row=0, column=3)
-        ttk.Button(row2, text="⬅", width=4,
-                   command=lambda: self._nudge(-1, 0)).grid(row=1, column=2)
-        ttk.Button(row2, text="➡", width=4,
-                   command=lambda: self._nudge(1, 0)).grid(row=1, column=4)
-        ttk.Button(row2, text="⬇", width=4,
-                   command=lambda: self._nudge(0, 1)).grid(row=2, column=3)
-
-        row3 = ttk.Frame(tab)
-        row3.pack(fill="x")
-        self.btn_hide = ttk.Button(row3, text="🙈 إخفاء كل الأيقونات",
-                                   command=self._toggle_hide)
-        self.btn_hide.pack(side="left", fill="x", expand=True)
-        ttk.Button(row3, text="🧲 محاذاة الكل للشبكة",
-                   command=self._snap).pack(side="left", fill="x",
-                                            expand=True, padx=(8, 0))
-
-    def _build_look_tab(self, tab):
-        fs = ttk.LabelFrame(tab, text=" حجم الأيقونات (16 – 256 بكسل) ", padding=8)
-        fs.pack(fill="x", pady=(0, 8))
         cur = self.ctl.get_icon_size()
-        self.lbl_size = ttk.Label(fs, font=FONT_B,
-                                  text=f"الحجم الحالي: {cur if cur else 'غير معروف'}")
-        self.lbl_size.pack(anchor="w")
-        row = ttk.Frame(fs)
-        row.pack(fill="x", pady=4)
-        self.var_size = tk.IntVar(value=cur or 48)
-        self._scale(row, from_=16, to=256, orient="horizontal", length=300,
-                 variable=self.var_size, font=FONT).pack(side="left")
-        self.btn_size = ttk.Button(row, text="✔ تطبيق الحجم",
-                                   command=self._apply_size)
-        self.btn_size.pack(side="left", padx=10)
-        row2 = ttk.Frame(fs)
-        row2.pack(fill="x")
-        ttk.Button(row2, text="➕ تكبير خطوة",
-                   command=lambda: self._size_step(True)).pack(side="left")
-        ttk.Button(row2, text="➖ تصغير خطوة",
-                   command=lambda: self._size_step(False)).pack(side="left",
-                                                                padx=8)
+        self.var_size.set(cur or 48)
+        self.lbl_size = ctk.CTkLabel(
+            size_card,
+            font=ctk.CTkFont("Segoe UI", 16, "bold"),
+            text=f"حجم الأيقونات: {cur if cur else 'غير معروف'} بكسل",
+        )
+        self.lbl_size.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 5))
 
-        fp = ttk.LabelFrame(tab, text=" المسافات بين الأيقونات (بكسل) ", padding=8)
-        fp.pack(fill="x", pady=(0, 8))
+        ctk.CTkSlider(
+            size_card,
+            from_=16,
+            to=256,
+            number_of_steps=240,
+            variable=self.var_size,
+            command=lambda v: self.lbl_size.configure(
+                text=f"حجم الأيقونات: {int(float(v))} بكسل"),
+        ).grid(row=1, column=0, sticky="ew", padx=15, pady=5)
+
+        row = ctk.CTkFrame(size_card, fg_color="transparent")
+        row.grid(row=2, column=0, sticky="w", padx=15, pady=(5, 15))
+        ctk.CTkButton(
+            row,
+            text="−",
+            width=40,
+            command=lambda: self._size_step(False),
+        ).grid(row=0, column=0, padx=4)
+        ctk.CTkButton(
+            row,
+            text="+",
+            width=40,
+            command=lambda: self._size_step(True),
+        ).grid(row=0, column=1, padx=4)
+        self.btn_size = ctk.CTkButton(
+            row,
+            text="✔ تطبيق الحجم",
+            command=self._apply_size,
+        )
+        self.btn_size.grid(row=0, column=2, padx=(20, 4))
+
+        # spacing
+        spacing_card = ctk.CTkFrame(frame)
+        spacing_card.grid(row=1, column=0, sticky="ew")
+        spacing_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            spacing_card,
+            text="المسافات بين الأيقونات",
+            font=ctk.CTkFont("Segoe UI", 16, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 5))
+
         try:
             cx, cy = self.ctl.get_spacing()
         except OSError:
             cx, cy = DEFAULT_SPACING, DEFAULT_SPACING
-        ttk.Label(fp, text="المسافة الأفقية:", font=FONT).pack(anchor="w")
-        self.var_sx = tk.IntVar(value=cx or DEFAULT_SPACING)
-        self._scale(fp, from_=32, to=400, orient="horizontal",
-                 variable=self.var_sx, font=FONT).pack(fill="x")
-        ttk.Label(fp, text="المسافة الرأسية:", font=FONT).pack(anchor="w")
-        self.var_sy = tk.IntVar(value=cy or DEFAULT_SPACING)
-        self._scale(fp, from_=32, to=400, orient="horizontal",
-                 variable=self.var_sy, font=FONT).pack(fill="x")
-        row3 = ttk.Frame(fp)
-        row3.pack(fill="x", pady=4)
-        ttk.Button(row3, text="✔ تطبيق المسافات",
-                   command=self._apply_spacing).pack(side="left")
-        ttk.Button(row3, text="↩ إعادة الافتراضي (75×75)",
-                   command=self._reset_spacing).pack(side="left", padx=8)
+        self.var_sx.set(cx or DEFAULT_SPACING)
+        self.var_sy.set(cy or DEFAULT_SPACING)
 
-        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
-                  text="ملاحظة: المسافات تُطبَّق عند «المحاذاة للشبكة» أو الترتيب التلقائي."
-                  ).pack(anchor="w", pady=4)
+        ctk.CTkLabel(spacing_card, text="أفقي:").grid(
+            row=1, column=0, sticky="w", padx=15)
+        ctk.CTkSlider(
+            spacing_card,
+            from_=32,
+            to=400,
+            number_of_steps=368,
+            variable=self.var_sx,
+        ).grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 10))
 
-    def _build_arrange_tab(self, tab):
-        btns = [
-            ("🔳 شبكة مرتبة (أبجديًا)", self._arrange_grid),
-            ("⭕ دائرة حول المركز", self._arrange_circle),
+        ctk.CTkLabel(spacing_card, text="رأسي:").grid(
+            row=3, column=0, sticky="w", padx=15)
+        ctk.CTkSlider(
+            spacing_card,
+            from_=32,
+            to=400,
+            number_of_steps=368,
+            variable=self.var_sy,
+        ).grid(row=4, column=0, sticky="ew", padx=15, pady=(0, 10))
+
+        row2 = ctk.CTkFrame(spacing_card, fg_color="transparent")
+        row2.grid(row=5, column=0, sticky="w", padx=15, pady=(5, 15))
+        ctk.CTkButton(row2, text="✔ تطبيق المسافات", command=self._apply_spacing).grid(
+            row=0, column=0, padx=4)
+        ctk.CTkButton(row2, text="↩ إعادة الافتراضي", command=self._reset_spacing).grid(
+            row=0, column=1, padx=4)
+
+    def _build_arrange_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["arrange"] = frame
+        frame.grid_columnconfigure((0, 1), weight=1)
+        frame.grid_rowconfigure((0, 1, 2, 3, 4), weight=1)
+
+        buttons = [
+            ("🔳 شبكة", self._arrange_grid),
+            ("⭕ دائرة", self._arrange_circle),
             ("〰 موجة", self._arrange_wave),
             ("🌀 حلزون", self._arrange_spiral),
-            ("📂 تجميع حسب نوع الملف", self._arrange_by_type),
+            ("📂 حسب النوع", self._arrange_by_type),
             ("⬆ صف علوي", lambda: self._arrange_edge("top")),
             ("⬇ صف سفلي", lambda: self._arrange_edge("bottom")),
             ("◀ عمود أيسر", lambda: self._arrange_edge("left")),
             ("▶ عمود أيمن", lambda: self._arrange_edge("right")),
-            ("🎯 توسيط أفقي في منتصف الشاشة", self._arrange_center),
-            ("🧲 محاذاة الكل للشبكة", self._snap),
+            ("🎯 توسيط", self._arrange_center),
+            ("🧲 محاذاة للشبكة", self._snap),
         ]
-        for text, cmd in btns:
-            ttk.Button(tab, text=text, command=cmd).pack(fill="x", pady=3)
-        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
-                  text="يعتمد التوزيع على المسافات المضبوطة في تبويب «الحجم والمسافات»."
-                  ).pack(anchor="w", pady=8)
+        for idx, (text, cmd) in enumerate(buttons):
+            r, c = divmod(idx, 2)
+            ctk.CTkButton(
+                frame,
+                text=text,
+                command=cmd,
+                height=70,
+                font=ctk.CTkFont("Segoe UI", 14),
+            ).grid(row=r, column=c, sticky="nsew", padx=8, pady=8)
 
-    def _build_layout_tab(self, tab):
-        row = ttk.Frame(tab)
-        row.pack(fill="x", pady=(0, 6))
-        ttk.Label(row, text="اسم التخطيط:", font=FONT).pack(side="left")
-        self.var_lname = tk.StringVar(value="تخطيطي")
-        ttk.Entry(row, textvariable=self.var_lname, font=FONT,
-                  width=20).pack(side="left", padx=6)
-        ttk.Button(row, text="💾 حفظ الوضع الحالي",
-                   command=self._save_layout).pack(side="left")
+    def _build_layouts_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["layouts"] = frame
+        frame.grid_columnconfigure(0, weight=1)
 
-        row2 = ttk.Frame(tab)
-        row2.pack(fill="x", pady=4)
-        self.cmb = ttk.Combobox(row2, state="readonly", font=FONT, width=24)
-        self.cmb.pack(side="left")
-        ttk.Button(row2, text="📂 استعادة",
-                   command=self._restore_layout).pack(side="left", padx=4)
-        ttk.Button(row2, text="🗑 حذف",
-                   command=self._delete_layout).pack(side="left")
+        # save
+        save_card = ctk.CTkFrame(frame)
+        save_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        save_card.grid_columnconfigure(1, weight=1)
 
-        row3 = ttk.Frame(tab)
-        row3.pack(fill="x", pady=4)
-        ttk.Button(row3, text="⬇ تصدير كل التخطيطات…",
-                   command=self._export_layouts).pack(side="left")
-        ttk.Button(row3, text="⬆ استيراد تخطيطات…",
-                   command=self._import_layouts).pack(side="left", padx=8)
+        ctk.CTkLabel(save_card, text="اسم التخطيط:").grid(
+            row=0, column=0, padx=15, pady=15)
+        ctk.CTkEntry(save_card, textvariable=self.var_lname).grid(
+            row=0, column=1, sticky="ew", padx=10, pady=15)
+        ctk.CTkButton(save_card, text="💾 حفظ", command=self._save_layout).grid(
+            row=0, column=2, padx=15, pady=15)
 
-        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
-                  wraplength=420, justify="left",
-                  text=("يُحفَظ اسم كل أيقونة وموقعها. عند الاستعادة على شاشة "
-                        "بدقة مختلفة تُقاس المواقع تلقائيًا لتناسبها.")).pack(anchor="w", pady=8)
+        # restore/delete
+        restore_card = ctk.CTkFrame(frame)
+        restore_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        restore_card.grid_columnconfigure(0, weight=1)
+
+        self.cmb = ctk.CTkOptionMenu(restore_card, values=[])
+        self.cmb.grid(row=0, column=0, sticky="ew", padx=15, pady=15)
+        ctk.CTkButton(restore_card, text="📂 استعادة", command=self._restore_layout).grid(
+            row=0, column=1, padx=(0, 10), pady=15)
+        ctk.CTkButton(restore_card, text="🗑 حذف", command=self._delete_layout).grid(
+            row=0, column=2, padx=(0, 15), pady=15)
+
+        # import/export
+        io_card = ctk.CTkFrame(frame)
+        io_card.grid(row=2, column=0, sticky="ew")
+        ctk.CTkButton(io_card, text="⬇ تصدير JSON", command=self._export_layouts).grid(
+            row=0, column=0, padx=15, pady=15)
+        ctk.CTkButton(io_card, text="⬆ استيراد JSON", command=self._import_layouts).grid(
+            row=0, column=1, padx=(0, 15), pady=15)
+
         self._reload_layout_list()
 
-    def _build_resolution_tab(self, tab):
-        self._auto_save_res = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            tab, text="✅ حفظ/استعادة تلقائية عند تغيّر دقة الشاشة",
-            variable=self._auto_save_res
-        ).pack(anchor="w", pady=4)
+    def _build_display_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["display"] = frame
+        frame.grid_columnconfigure(0, weight=1)
 
-        info = ttk.Label(tab, text=self._res_key(self._res), font=FONT_B)
-        info.pack(anchor="w", pady=4)
-        self._res_lbl = info
+        ctk.CTkSwitch(
+            frame,
+            text="✅ حفظ/استعادة تلقائية عند تغيّر الدقة",
+            variable=self._auto_save_res,
+        ).grid(row=0, column=0, sticky="w", padx=15, pady=15)
 
-        row = ttk.Frame(tab)
-        row.pack(fill="x", pady=8)
-        ttk.Button(row, text="💾 حفظ تخطيط هذه الدقة",
-                   command=lambda: self._save_resolution_layout(self.ctl.work_area())).pack(side="left")
-        ttk.Button(row, text="📂 استعادة تخطيط هذه الدقة",
-                   command=lambda: self._try_restore_resolution_layout(self.ctl.work_area())).pack(side="left", padx=8)
+        self._res_lbl = ctk.CTkLabel(
+            frame,
+            text=self._res_key(self._res),
+            font=ctk.CTkFont("Segoe UI", 16, "bold"),
+        )
+        self._res_lbl.grid(row=1, column=0, sticky="w", padx=15, pady=(0, 10))
 
-        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
-                  wraplength=420, justify="left",
-                  text=("عند تغيّر الدقة يُحفظ الوضع الحالي للدقة القديمة ويُحاول "
-                        "استعادة وضع محفوظ سابقًا للدقة الجديدة.")).pack(anchor="w", pady=8)
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.grid(row=2, column=0, sticky="w", padx=15, pady=(0, 15))
+        ctk.CTkButton(
+            row,
+            text="💾 حفظ تخطيط هذه الدقة",
+            command=lambda: self._save_resolution_layout(self.ctl.work_area()),
+        ).grid(row=0, column=0, padx=4)
+        ctk.CTkButton(
+            row,
+            text="📂 استعادة تخطيط هذه الدقة",
+            command=lambda: self._try_restore_resolution_layout(self.ctl.work_area()),
+        ).grid(row=0, column=1, padx=4)
 
-    def _build_appearance_tab(self, tab):
-        ttk.Label(tab, text="اختر المظهر:", font=FONT_B).pack(anchor="w", pady=(0, 6))
+    def _build_settings_section(self, parent):
+        frame = ctk.CTkFrame(parent)
+        self.section_frames["settings"] = frame
+        frame.grid_columnconfigure(0, weight=1)
 
-        self.theme_var = tk.StringVar(value=self.settings.get("theme", "dark"))
-        themes = {
-            "dark": "🌙 داكن (افتراضي)",
-            "light": "☀️ فاتح",
-        }
-        cmb = ttk.Combobox(tab, state="readonly", font=FONT, width=24,
-                           textvariable=self.theme_var,
-                           values=list(themes.values()))
-        cmb.set(themes[self.theme_var.get()])
-        cmb.pack(anchor="w")
+        # theme
+        theme_card = ctk.CTkFrame(frame)
+        theme_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        theme_card.grid_columnconfigure(0, weight=1)
 
-        def on_theme_change(_evt=None):
-            selected = cmb.get()
-            key = "dark" if "داكن" in selected else "light"
-            self.settings.set("theme", key)
-            self._apply_theme(key)
-            self._set_status(f"✅ تم تطبيق المظهر: {themes[key]}")
+        ctk.CTkLabel(
+            theme_card,
+            text="المظهر",
+            font=ctk.CTkFont("Segoe UI", 16, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 5))
 
-        cmb.bind("<<ComboboxSelected>>", on_theme_change)
+        self.theme_cmb = ctk.CTkOptionMenu(
+            theme_card,
+            values=["Dark", "Light", "System"],
+            variable=self.theme_var,
+            command=self._on_theme_change,
+        )
+        self.theme_cmb.grid(row=1, column=0, sticky="w", padx=15, pady=(5, 15))
 
-        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
-                  wraplength=420, justify="left",
-                  text=("الوضع الداكن هو الافتراضي. اختر الفاتح إذا حبيت، "
-                        "وسيُحفظ الاختيار تلقائيًا.")).pack(anchor="w", pady=12)
+        # hotkeys
+        hotkeys_card = ctk.CTkFrame(frame)
+        hotkeys_card.grid(row=1, column=0, sticky="ew")
+        hotkeys_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            hotkeys_card,
+            text="اختصارات الكيبورد",
+            font=ctk.CTkFont("Segoe UI", 16, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 5))
+
+        hotkeys_text = (
+            "Ctrl+Alt+S    فتح البرنامج\n"
+            "Ctrl+Alt+H    إخفاء/إظهار النافذة\n"
+            "Ctrl+Alt+R    استعادة تخطيط الدقة\n"
+            "Ctrl+Alt+W    ترتيب موجة\n"
+            "Ctrl+Alt+P    ترتيب حلزون"
+        )
+        ctk.CTkLabel(
+            hotkeys_card,
+            text=hotkeys_text,
+            justify="right",
+            anchor="e",
+            font=ctk.CTkFont("Consolas", 14),
+        ).grid(row=1, column=0, sticky="ew", padx=15, pady=(5, 15))
+
+    def _on_theme_change(self, choice):
+        key = choice.lower()
+        self.settings.set("theme", key)
+        self._apply_theme(key)
+        self._set_status(f"✅ تم تطبيق المظهر: {choice}")
 
     # ==================================================================
-    #  منطق الواجهة
+    #  Icon list helpers
+    # ==================================================================
+    def _rebuild_icon_list(self):
+        for row in self.icon_rows:
+            row["frame"].destroy()
+        self.icon_rows = []
+        self.selection = set()
+
+        for ic in self.icons:
+            idx = ic["i"]
+            card = ctk.CTkFrame(self.icon_list_frame, fg_color="transparent", corner_radius=6)
+            card.grid_columnconfigure(1, weight=1)
+
+            var = tk.BooleanVar(value=False)
+            chk = ctk.CTkCheckBox(card, text="", variable=var, width=20)
+            chk.configure(command=lambda i=idx, v=var: self._row_toggle(i, v.get()))
+            chk.grid(row=0, column=0, padx=5)
+
+            name_lbl = ctk.CTkLabel(card, text=ic["name"], anchor="w")
+            name_lbl.grid(row=0, column=1, sticky="w", padx=5)
+            name_lbl.bind("<Button-1>", lambda e, i=idx: self._select(i, only=True))
+
+            coords_lbl = ctk.CTkLabel(
+                card,
+                text=f"({ic['x']}, {ic['y']})",
+                anchor="e",
+                width=80,
+            )
+            coords_lbl.grid(row=0, column=2, padx=5)
+            coords_lbl.bind("<Button-1>", lambda e, i=idx: self._select(i, only=True))
+
+            card.grid(row=len(self.icon_rows), column=0, sticky="ew", pady=2)
+            self.icon_rows.append({
+                "index": idx,
+                "frame": card,
+                "name_lbl": name_lbl,
+                "coords_lbl": coords_lbl,
+                "var": var,
+                "name": ic["name"].lower(),
+            })
+        self._filter_icons()
+
+    def _filter_icons(self):
+        term = self.search_var.get().lower().strip()
+        for row in self.icon_rows:
+            if not term or term in row["name"]:
+                row["frame"].grid()
+            else:
+                row["frame"].grid_remove()
+
+    def _select(self, idx, only=False):
+        if only:
+            self.selection = {idx}
+        else:
+            self.selection.add(idx)
+        self._update_selection_vars()
+        self._update_row_visuals()
+        self._on_select()
+        self._draw_map()
+
+    def _row_toggle(self, idx, selected):
+        if selected:
+            self.selection.add(idx)
+        else:
+            self.selection.discard(idx)
+        self._update_selection_vars()
+        self._update_row_visuals()
+        self._on_select()
+        self._draw_map()
+
+    def _clear_selection(self):
+        self.selection.clear()
+        self._update_selection_vars()
+        self._update_row_visuals()
+        self._on_select()
+        self._draw_map()
+
+    def _update_selection_vars(self):
+        for row in self.icon_rows:
+            val = row["index"] in self.selection
+            if row["var"].get() != val:
+                row["var"].set(val)
+
+    def _update_row_visuals(self):
+        for row in self.icon_rows:
+            if row["index"] in self.selection:
+                row["frame"].configure(fg_color=("gray85", "gray25"))
+            else:
+                row["frame"].configure(fg_color="transparent")
+
+    # ==================================================================
+    #  Core backend (kept/reimplemented)
     # ==================================================================
     def _set_status(self, msg):
         self.status.set(msg)
@@ -1107,21 +1314,18 @@ class App(tk.Tk):
 
     def refresh_icons(self):
         try:
-            self._set_status("⏳ جارٍ قراءة أيقونات سطح المكتب…")
+            self._set_status("⏳ جارٍ قراءة الأيقونات…")
             self.icons = self.ctl.list_icons()
         except OSError as exc:
             messagebox.showerror("خطأ", str(exc))
             self._set_status("تعذّرت قراءة الأيقونات")
             return
-        self.tree.delete(*self.tree.get_children())
-        for ic in self.icons:
-            self.tree.insert("", "end", iid=str(ic["i"]),
-                             values=(ic["name"], ic["x"], ic["y"]))
+        self._rebuild_icon_list()
         self._draw_map()
         cur = self.ctl.get_icon_size()
-        self.lbl_size.config(
-            text=f"الحجم الحالي: {cur if cur else 'غير معروف'}")
-        self._res_lbl.config(text=self._res_key(self.ctl.work_area()))
+        self.lbl_size.configure(
+            text=f"حجم الأيقونات: {cur if cur else 'غير معروف'} بكسل")
+        self._res_lbl.configure(text=self._res_key(self.ctl.work_area()))
         self._set_status(f"✅ {len(self.icons)} أيقونة")
 
     def _draw_map(self):
@@ -1131,18 +1335,18 @@ class App(tk.Tk):
         sx = self.map_w / max(1, ww)
         sy = self.map_h / max(1, wh)
         self._scale = (sx, sy)
-        sel = set(self.tree.selection()) if hasattr(self, "tree") else set()
         for ic in self.icons:
             x = (ic["x"] - wx) * sx
             y = (ic["y"] - wy) * sy
-            selected = str(ic["i"]) in sel
+            selected = ic["i"] in self.selection
             color = "#f9a825" if selected else "#4fc3f7"
             c.create_rectangle(x, y, x + 10, y + 10, fill=color,
                                outline="", tags=f"ic{ic['i']}")
 
     def _selected_index(self):
-        sel = self.tree.selection()
-        return int(sel[0]) if sel else None
+        if not self.selection:
+            return None
+        return min(self.selection)
 
     def _on_select(self, _evt=None):
         i = self._selected_index()
@@ -1151,31 +1355,39 @@ class App(tk.Tk):
         ic = self.icons[i]
         self.var_x.set(ic["x"])
         self.var_y.set(ic["y"])
-        self._draw_map()
 
     def _move_icon(self, i, x, y):
         self.ctl.set_position(i, x, y)
         if i < len(self.icons):
             self.icons[i]["x"], self.icons[i]["y"] = x, y
-            self.tree.item(str(i), values=(self.icons[i]["name"], x, y))
+            for row in self.icon_rows:
+                if row["index"] == i:
+                    row["coords_lbl"].configure(text=f"({x}, {y})")
+                    break
         self._draw_map()
 
     def _move_to_xy(self):
-        i = self._selected_index()
-        if i is None:
+        if not self.selection:
             messagebox.showinfo("تنبيه", "اختر أيقونة من القائمة أولًا.")
             return
-        self._move_icon(i, self.var_x.get(), self.var_y.get())
-        self._set_status(f"📍 نُقلت الأيقونة إلى ({self.var_x.get()}, {self.var_y.get()})")
+        x, y = self.var_x.get(), self.var_y.get()
+        base = self.icons[min(self.selection)]
+        dx, dy = x - base["x"], y - base["y"]
+        for idx in self.selection:
+            ic = self.icons[idx]
+            self._move_icon(idx, ic["x"] + dx, ic["y"] + dy)
+        self.ctl.refresh_view()
+        self._set_status(f"📍 نُقلت الأيقونات إلى ({x}, {y})")
 
     def _nudge(self, dx, dy):
-        i = self._selected_index()
-        if i is None or i >= len(self.icons):
+        if not self.selection:
             messagebox.showinfo("تنبيه", "اختر أيقونة من القائمة أولًا.")
             return
         step = self.var_step.get()
-        ic = self.icons[i]
-        self._move_icon(i, ic["x"] + dx * step, ic["y"] + dy * step)
+        for i in list(self.selection):
+            ic = self.icons[i]
+            self._move_icon(i, ic["x"] + dx * step, ic["y"] + dy * step)
+        self.ctl.refresh_view()
 
     def _map_to_desktop(self, mx, my):
         sx, sy = self._scale
@@ -1195,20 +1407,26 @@ class App(tk.Tk):
     def _map_press(self, evt):
         i = self._icon_at(evt.x, evt.y)
         if i is not None:
-            self.tree.selection_set(str(i))
-            self.tree.see(str(i))
-            self._on_select()
+            self._select(i, only=True)
             self.drag_index = i
         else:
-            sel = self._selected_index()
-            if sel is not None:
+            if self.selection:
                 x, y = self._map_to_desktop(evt.x, evt.y)
-                self._move_icon(sel, x, y)
+                base = self.icons[min(self.selection)]
+                dx, dy = x - base["x"], y - base["y"]
+                for idx in self.selection:
+                    ic = self.icons[idx]
+                    self._move_icon(idx, ic["x"] + dx, ic["y"] + dy)
+                self.ctl.refresh_view()
 
     def _map_drag(self, evt):
-        if self.drag_index is not None:
+        if self.drag_index is not None and self.selection:
             x, y = self._map_to_desktop(evt.x, evt.y)
-            self._move_icon(self.drag_index, x, y)
+            base = self.icons[self.drag_index]
+            dx, dy = x - base["x"], y - base["y"]
+            for idx in self.selection:
+                ic = self.icons[idx]
+                self._move_icon(idx, ic["x"] + dx, ic["y"] + dy)
 
     def _map_release(self, _evt):
         if self.drag_index is not None:
@@ -1220,20 +1438,20 @@ class App(tk.Tk):
             return
         target = self.var_size.get()
         self._size_busy = True
-        self.btn_size.state(["disabled"])
+        self.btn_size.configure(state="disabled")
 
         def worker():
             err = None
             try:
                 final = self.ctl.set_icon_size(target)
-                self.after(0, lambda: self.lbl_size.config(
-                    text=f"الحجم الحالي: {final if final else 'غير معروف'}"))
+                self.after(0, lambda: self.lbl_size.configure(
+                    text=f"حجم الأيقونات: {final if final else 'غير معروف'} بكسل"))
             except RuntimeError as exc:
                 err = str(exc)
             finally:
                 def done():
                     self._size_busy = False
-                    self.btn_size.state(["!disabled"])
+                    self.btn_size.configure(state="normal")
                     if err:
                         messagebox.showwarning("تعذّر الضبط الدقيق", err)
                     self._set_status("✅ تم ضبط حجم الأيقونات")
@@ -1245,8 +1463,9 @@ class App(tk.Tk):
         try:
             self.ctl.nudge_icon_size(bigger)
             cur = self.ctl.get_icon_size()
-            self.lbl_size.config(
-                text=f"الحجم الحالي: {cur if cur else 'غير معروف'}")
+            self.lbl_size.configure(
+                text=f"حجم الأيقونات: {cur if cur else 'غير معروف'} بكسل")
+            self.var_size.set(cur or self.var_size.get())
         except OSError as exc:
             messagebox.showerror("خطأ", str(exc))
 
@@ -1422,16 +1641,19 @@ class App(tk.Tk):
     def _toggle_hide(self):
         self.hidden = not self.hidden
         self.ctl.set_visible(not self.hidden)
-        self.btn_hide.config(
-            text="👁 إظهار الأيقونات" if self.hidden else "🙈 إخفاء كل الأيقونات")
+        self.btn_hide.configure(
+            text="👁 إظهار الأيقونات" if self.hidden else "🙈 إخفاء الأيقونات")
         self._set_status("🙈 الأيقونات مخفية" if self.hidden else "👁 الأيقونات ظاهرة")
 
-    # ---------------- التخطيطات ----------------
+    # ---------------- Layouts ----------------
     def _reload_layout_list(self):
         names = sorted(self.store.data.keys())
-        self.cmb["values"] = names
-        if names and not self.cmb.get():
-            self.cmb.set(names[0])
+        self.cmb.configure(values=names)
+        if names:
+            if self.cmb.get() not in names:
+                self.cmb.set(names[0])
+        else:
+            self.cmb.set("")
 
     def _save_layout(self):
         name = self.var_lname.get().strip()
@@ -1512,7 +1734,7 @@ class App(tk.Tk):
             except (OSError, json.JSONDecodeError) as exc:
                 messagebox.showerror("خطأ", str(exc))
 
-    # ---------------- دقة الشاشة ----------------
+    # ---------------- Resolution ----------------
     def _save_resolution_layout(self, area):
         if not self.icons:
             self.refresh_icons()
@@ -1548,7 +1770,7 @@ class App(tk.Tk):
             if self._auto_save_res.get():
                 self._save_resolution_layout(old_area)
             self._try_restore_resolution_layout(new_area)
-            self._res_lbl.config(text=self._res_key(new_area))
+            self._res_lbl.configure(text=self._res_key(new_area))
         self.after(2000, self._check_resolution)
 
     # ---------------- Tray integration ----------------
@@ -1594,8 +1816,6 @@ class App(tk.Tk):
             pass
         self.destroy()
 
-
-# ==========================================================================
 def _enable_dpi_awareness():
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)

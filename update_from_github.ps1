@@ -8,6 +8,9 @@ Set-Location $repo
 Write-Host "🔽 جارٍ سحب آخر التحديثات من GitHub..." -ForegroundColor Cyan
 git pull origin main
 
+Write-Host "📦 جارٍ تحديث المكتبات..." -ForegroundColor Cyan
+pip install -r requirements.txt
+
 Write-Host "🔧 جارٍ بناء ملف EXE..." -ForegroundColor Cyan
 pyinstaller --noconsole --onefile --icon icon.ico --name "DesktopIconStudio" desktop_icon_studio.py
 
