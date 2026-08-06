@@ -443,6 +443,35 @@ class LayoutStore:
 
 
 # ==========================================================================
+#  إدارة الإعدادات (JSON)
+# ==========================================================================
+class SettingsStore:
+    def __init__(self, path):
+        self.path = path
+        self.data = {}
+        self.load()
+
+    def load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, "r", encoding="utf-8") as f:
+                    self.data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            self.data = {}
+
+    def save(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
+        self.save()
+
+
+# ==========================================================================
 #  أيقونة بجانب الساعة + اختصارات عالمية
 # ==========================================================================
 class TrayManager(threading.Thread):
@@ -652,6 +681,7 @@ class App(tk.Tk):
 
         base = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.store = LayoutStore(os.path.join(base, "layouts.json"))
+        self.settings = SettingsStore(os.path.join(base, "settings.json"))
 
         self.icons = []
         self.drag_index = None
@@ -659,7 +689,7 @@ class App(tk.Tk):
         self._size_busy = False
         self._res = self.ctl.work_area()
 
-        self._apply_dark_theme()
+        self._apply_theme(self.settings.get("theme", "dark"))
         self._build_ui()
 
         # Tray + hotkeys
@@ -673,15 +703,47 @@ class App(tk.Tk):
 
         self.after(300, self.refresh_icons)
 
-    def _apply_dark_theme(self):
-        """تفعيل الثيم الداكن على كل عناصر الواجهة."""
-        BG_MAIN = "#1e1e2e"
-        BG_CARD = "#2d2d44"
-        FG_MAIN = "#e0e0e0"
-        ACCENT = "#4fc3f7"
-        ACCENT_DARK = "#3a8db5"
+    def _set_title_bar_dark(self, dark=True):
+        """تفعيل الوضع الداكن لشريط عنوان النافذة في ويندوز 10/11."""
+        try:
+            hwnd = wintypes.HWND(self.winfo_id())
+            value = wintypes.BOOL(1 if dark else 0)
+            dwm = ctypes.windll.dwmapi
+            for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                try:
+                    dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value),
+                                              ctypes.sizeof(value))
+                    break
+                except OSError:
+                    continue
+        except Exception:
+            pass
 
+    def _apply_theme(self, theme_name="dark"):
+        """تطبيق ثيم داكن أو فاتح على كل عناصر الواجهة."""
+        if theme_name == "light":
+            BG_MAIN = "#f0f0f0"
+            BG_CARD = "#ffffff"
+            FG_MAIN = "#222222"
+            ACCENT = "#1976d2"
+            ACCENT_DARK = "#145a9e"
+            CANVAS_BG = "#e3f2fd"
+        else:  # dark
+            BG_MAIN = "#0d0d0d"
+            BG_CARD = "#181818"
+            FG_MAIN = "#e0e0e0"
+            ACCENT = "#4fc3f7"
+            ACCENT_DARK = "#3a8db5"
+            CANVAS_BG = "#12121a"
+
+        self._theme = theme_name
         self.configure(bg=BG_MAIN)
+        self.tk_setPalette(
+            background=BG_MAIN, foreground=FG_MAIN,
+            activeBackground=ACCENT, activeForeground="#000",
+            selectBackground=ACCENT, selectForeground="#000",
+            highlightBackground=BG_CARD, highlightColor=ACCENT)
+
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
@@ -726,20 +788,45 @@ class App(tk.Tk):
         style.map("TScrollbar", background=[("active", ACCENT)])
         style.configure("Horizontal.TScale", background=BG_MAIN, troughcolor=BG_CARD)
 
+        # تحديث عناصر tk الموجودة (ttk تتحدث تلقائيًا عبر الأنماط)
+        for widget in self._all_tk_widgets():
+            if isinstance(widget, tk.Canvas):
+                widget.config(bg=CANVAS_BG)
+            elif isinstance(widget, tk.Scale):
+                widget.config(bg=BG_MAIN, fg=ACCENT, troughcolor=BG_CARD,
+                              activebackground=ACCENT)
+            elif isinstance(widget, tk.Spinbox):
+                widget.config(bg=BG_CARD, fg=FG_MAIN, insertbackground=FG_MAIN,
+                              buttonbackground=ACCENT,
+                              highlightbackground=BG_CARD, highlightcolor=ACCENT)
+            elif isinstance(widget, (tk.Frame, tk.Tk)):
+                widget.config(bg=BG_MAIN)
+
+        self._set_title_bar_dark(dark=(theme_name == "dark"))
+
+    def _all_tk_widgets(self, widget=None):
+        if widget is None:
+            widget = self
+        children = []
+        for w in widget.winfo_children():
+            children.append(w)
+            children.extend(self._all_tk_widgets(w))
+        return children
+
     def _spinbox(self, parent, **kwargs):
         defaults = {"bg": "#2d2d44", "fg": "#e0e0e0",
                     "insertbackground": "#e0e0e0", "buttonbackground": "#4fc3f7",
                     "borderwidth": 1, "highlightthickness": 1,
                     "highlightbackground": "#2d2d44", "highlightcolor": "#4fc3f7"}
         defaults.update(kwargs)
-        return self._spinbox(parent, **defaults)
+        return tk.Spinbox(parent, **defaults)
 
     def _scale(self, parent, **kwargs):
         defaults = {"bg": "#1e1e2e", "fg": "#4fc3f7", "troughcolor": "#2d2d44",
                     "highlightthickness": 0, "activebackground": "#4fc3f7",
                     "borderwidth": 0}
         defaults.update(kwargs)
-        return self._scale(parent, **defaults)
+        return tk.Scale(parent, **defaults)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -775,17 +862,20 @@ class App(tk.Tk):
         tab_arrange = ttk.Frame(nb, padding=8)
         tab_layout = ttk.Frame(nb, padding=8)
         tab_res = ttk.Frame(nb, padding=8)
+        tab_appear = ttk.Frame(nb, padding=8)
         nb.add(tab_move, text=" الأيقونات والتحريك ")
         nb.add(tab_look, text=" الحجم والمسافات ")
         nb.add(tab_arrange, text=" الترتيب التلقائي ")
         nb.add(tab_layout, text=" التخطيطات ")
         nb.add(tab_res, text=" دقة الشاشة ")
+        nb.add(tab_appear, text=" المظهر ")
 
         self._build_move_tab(tab_move)
         self._build_look_tab(tab_look)
         self._build_arrange_tab(tab_arrange)
         self._build_layout_tab(tab_layout)
         self._build_resolution_tab(tab_res)
+        self._build_appearance_tab(tab_appear)
 
         self.status = tk.StringVar(value="جاهز")
         bar = ttk.Frame(self)
@@ -976,6 +1066,34 @@ class App(tk.Tk):
                   wraplength=420, justify="left",
                   text=("عند تغيّر الدقة يُحفظ الوضع الحالي للدقة القديمة ويُحاول "
                         "استعادة وضع محفوظ سابقًا للدقة الجديدة.")).pack(anchor="w", pady=8)
+
+    def _build_appearance_tab(self, tab):
+        ttk.Label(tab, text="اختر المظهر:", font=FONT_B).pack(anchor="w", pady=(0, 6))
+
+        self.theme_var = tk.StringVar(value=self.settings.get("theme", "dark"))
+        themes = {
+            "dark": "🌙 داكن (افتراضي)",
+            "light": "☀️ فاتح",
+        }
+        cmb = ttk.Combobox(tab, state="readonly", font=FONT, width=24,
+                           textvariable=self.theme_var,
+                           values=list(themes.values()))
+        cmb.set(themes[self.theme_var.get()])
+        cmb.pack(anchor="w")
+
+        def on_theme_change(_evt=None):
+            selected = cmb.get()
+            key = "dark" if "داكن" in selected else "light"
+            self.settings.set("theme", key)
+            self._apply_theme(key)
+            self._set_status(f"✅ تم تطبيق المظهر: {themes[key]}")
+
+        cmb.bind("<<ComboboxSelected>>", on_theme_change)
+
+        ttk.Label(tab, foreground="#888", font=("Segoe UI", 9),
+                  wraplength=420, justify="left",
+                  text=("الوضع الداكن هو الافتراضي. اختر الفاتح إذا حبيت، "
+                        "وسيُحفظ الاختيار تلقائيًا.")).pack(anchor="w", pady=12)
 
     # ==================================================================
     #  منطق الواجهة
