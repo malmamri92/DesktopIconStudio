@@ -659,6 +659,7 @@ class App(tk.Tk):
         self._size_busy = False
         self._res = self.ctl.work_area()
 
+        self._apply_dark_theme()
         self._build_ui()
 
         # Tray + hotkeys
@@ -671,6 +672,74 @@ class App(tk.Tk):
         self.after(2000, self._check_resolution)
 
         self.after(300, self.refresh_icons)
+
+    def _apply_dark_theme(self):
+        """تفعيل الثيم الداكن على كل عناصر الواجهة."""
+        BG_MAIN = "#1e1e2e"
+        BG_CARD = "#2d2d44"
+        FG_MAIN = "#e0e0e0"
+        ACCENT = "#4fc3f7"
+        ACCENT_DARK = "#3a8db5"
+
+        self.configure(bg=BG_MAIN)
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=BG_MAIN, foreground=FG_MAIN,
+                        fieldbackground=BG_CARD, font=FONT)
+        style.configure("TFrame", background=BG_MAIN)
+        style.configure("TLabel", background=BG_MAIN, foreground=FG_MAIN)
+        style.configure("TButton", background=BG_CARD, foreground=FG_MAIN,
+                        bordercolor=BG_CARD, lightcolor=BG_CARD,
+                        darkcolor=BG_CARD, focusthickness=0)
+        style.map("TButton",
+                  background=[("active", ACCENT), ("pressed", ACCENT_DARK)],
+                  foreground=[("active", "#000"), ("pressed", "#000")])
+        style.configure("TNotebook", background=BG_MAIN, tabmargins=[2, 5, 2, 0])
+        style.configure("TNotebook.Tab", background=BG_CARD, foreground=FG_MAIN,
+                        padding=[10, 4])
+        style.map("TNotebook.Tab",
+                  background=[("selected", ACCENT)],
+                  foreground=[("selected", "#000")],
+                  expand=[("selected", [2, 2, 2, 0])])
+        style.configure("TLabelframe", background=BG_MAIN, foreground=ACCENT)
+        style.configure("TLabelframe.Label", background=BG_MAIN, foreground=ACCENT)
+        style.configure("TEntry", fieldbackground=BG_CARD, foreground=FG_MAIN,
+                        insertcolor=FG_MAIN)
+        style.configure("TCombobox", fieldbackground=BG_CARD, foreground=FG_MAIN,
+                        selectbackground=ACCENT)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", BG_CARD), ("active", BG_CARD)],
+                  selectbackground=[("readonly", ACCENT)])
+        style.configure("TCheckbutton", background=BG_MAIN, foreground=FG_MAIN)
+        style.configure("Treeview", background=BG_CARD, foreground=FG_MAIN,
+                        fieldbackground=BG_CARD, rowheight=22)
+        style.configure("Treeview.Heading", background=BG_CARD, foreground=FG_MAIN)
+        style.map("Treeview",
+                  background=[("selected", ACCENT), ("focus", ACCENT)],
+                  foreground=[("selected", "#000"), ("focus", "#000")])
+        style.configure("TScrollbar", background=BG_CARD, troughcolor=BG_MAIN,
+                        bordercolor=BG_MAIN, arrowcolor=FG_MAIN)
+        style.map("TScrollbar", background=[("active", ACCENT)])
+        style.configure("Horizontal.TScale", background=BG_MAIN, troughcolor=BG_CARD)
+
+    def _spinbox(self, parent, **kwargs):
+        defaults = {"bg": "#2d2d44", "fg": "#e0e0e0",
+                    "insertbackground": "#e0e0e0", "buttonbackground": "#4fc3f7",
+                    "borderwidth": 1, "highlightthickness": 1,
+                    "highlightbackground": "#2d2d44", "highlightcolor": "#4fc3f7"}
+        defaults.update(kwargs)
+        return self._spinbox(parent, **defaults)
+
+    def _scale(self, parent, **kwargs):
+        defaults = {"bg": "#1e1e2e", "fg": "#4fc3f7", "troughcolor": "#2d2d44",
+                    "highlightthickness": 0, "activebackground": "#4fc3f7",
+                    "borderwidth": 0}
+        defaults.update(kwargs)
+        return self._scale(parent, **defaults)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -751,11 +820,11 @@ class App(tk.Tk):
         row.pack(fill="x")
         ttk.Label(row, text="X:", font=FONT).pack(side="left")
         self.var_x = tk.IntVar(value=0)
-        tk.Spinbox(row, from_=0, to=10000, width=7, font=FONT,
+        self._spinbox(row, from_=0, to=10000, width=7, font=FONT,
                    textvariable=self.var_x).pack(side="left", padx=(2, 12))
         ttk.Label(row, text="Y:", font=FONT).pack(side="left")
         self.var_y = tk.IntVar(value=0)
-        tk.Spinbox(row, from_=0, to=10000, width=7, font=FONT,
+        self._spinbox(row, from_=0, to=10000, width=7, font=FONT,
                    textvariable=self.var_y).pack(side="left", padx=(2, 12))
         ttk.Button(row, text="📍 نقل إلى هذه النقطة",
                    command=self._move_to_xy).pack(side="left")
@@ -765,7 +834,7 @@ class App(tk.Tk):
         ttk.Label(row2, text="خطوة التحريك:", font=FONT).grid(
             row=0, column=0, rowspan=3, padx=(0, 10))
         self.var_step = tk.IntVar(value=10)
-        tk.Spinbox(row2, from_=1, to=500, width=6, font=FONT,
+        self._spinbox(row2, from_=1, to=500, width=6, font=FONT,
                    textvariable=self.var_step).grid(row=1, column=1, padx=(0, 14))
         ttk.Button(row2, text="⬆", width=4,
                    command=lambda: self._nudge(0, -1)).grid(row=0, column=3)
@@ -795,7 +864,7 @@ class App(tk.Tk):
         row = ttk.Frame(fs)
         row.pack(fill="x", pady=4)
         self.var_size = tk.IntVar(value=cur or 48)
-        tk.Scale(row, from_=16, to=256, orient="horizontal", length=300,
+        self._scale(row, from_=16, to=256, orient="horizontal", length=300,
                  variable=self.var_size, font=FONT).pack(side="left")
         self.btn_size = ttk.Button(row, text="✔ تطبيق الحجم",
                                    command=self._apply_size)
@@ -816,11 +885,11 @@ class App(tk.Tk):
             cx, cy = DEFAULT_SPACING, DEFAULT_SPACING
         ttk.Label(fp, text="المسافة الأفقية:", font=FONT).pack(anchor="w")
         self.var_sx = tk.IntVar(value=cx or DEFAULT_SPACING)
-        tk.Scale(fp, from_=32, to=400, orient="horizontal",
+        self._scale(fp, from_=32, to=400, orient="horizontal",
                  variable=self.var_sx, font=FONT).pack(fill="x")
         ttk.Label(fp, text="المسافة الرأسية:", font=FONT).pack(anchor="w")
         self.var_sy = tk.IntVar(value=cy or DEFAULT_SPACING)
-        tk.Scale(fp, from_=32, to=400, orient="horizontal",
+        self._scale(fp, from_=32, to=400, orient="horizontal",
                  variable=self.var_sy, font=FONT).pack(fill="x")
         row3 = ttk.Frame(fp)
         row3.pack(fill="x", pady=4)
