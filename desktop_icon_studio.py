@@ -132,8 +132,12 @@ class LVITEMW(ctypes.Structure):
     ]
 
 
+# ctypes.wintypes لا يعرّف LRESULT في بعض إصدارات بايثون
+LRESULT = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
+
+
 WNDPROC = ctypes.WINFUNCTYPE(
-    wintypes.LRESULT,
+    LRESULT,
     wintypes.HWND,
     wintypes.UINT,
     wintypes.WPARAM,
